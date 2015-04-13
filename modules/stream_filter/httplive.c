@@ -43,6 +43,8 @@
 #include <vlc_memory.h>
 #include <vlc_gcrypt.h>
 
+#include <time.h>
+
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
@@ -60,6 +62,7 @@ vlc_module_end()
 /*****************************************************************************
  *
  *****************************************************************************/
+#define PLAYBACK_DELAY 1 /* not really scientific */
 #define AES_BLOCK_SIZE 16 /* Only support AES-128 */
 typedef struct segment_s
 {
@@ -120,6 +123,9 @@ struct stream_sys_t
         int         seek;       /* segment requested by seek (default -1) */
         vlc_mutex_t lock_wait;  /* protect segment download counter */
         vlc_cond_t  wait;       /* some condition to wait on */
+
+        long total_seconds;
+        char composition[200]; //segfault, I see you
     } download;
 
     /* Playback */
@@ -128,6 +134,10 @@ struct stream_sys_t
         uint64_t    offset;     /* current offset in media */
         int         stream;     /* current hls_stream  */
         int         segment;    /* current segment for playback */
+
+        long current_time;
+        long start_time;
+        long buffer_size;
     } playback;
 
     /* Playlist */
@@ -155,6 +165,8 @@ struct stream_sys_t
     vlc_cond_t   wait;
     vlc_mutex_t  lock;
     bool         paused;
+
+    //int buffer_size;
 };
 
 /****************************************************************************
@@ -175,6 +187,100 @@ static void* hls_Reload(void *);
 
 static segment_t *segment_GetSegment(hls_stream_t *hls, int wanted);
 static void segment_Free(segment_t *segment);
+
+static hls_stream_t *hls_Get(vlc_array_t *hls_stream, const int wanted);
+static inline hls_stream_t *hls_GetFirst(vlc_array_t *hls_stream);
+static hls_stream_t *hls_GetLast(vlc_array_t *hls_stream);
+
+/****************************************************************************
+ * My functions
+ ****************************************************************************/
+static uint64_t BBA0_f(stream_sys_t *p_sys);
+static int BBA0(stream_sys_t *p_sys);
+
+static int last_second = -1;
+static void hls_printStatus(stream_sys_t *p_sys)
+{
+    // once a second is enough
+    if (p_sys->playback.current_time == last_second) return;
+    last_second = p_sys->playback.current_time;
+
+    printf("CURRENT TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
+      p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, BBA0(p_sys), p_sys->download.composition);
+}
+
+static void hls_stringAppend(char *str, int number)
+{
+    sprintf(str, "%s%d", str, number);
+}
+
+static uint64_t hls_GetStreamBandwidth(stream_sys_t *p_sys, int stream_index)
+{
+  return hls_Get(p_sys->hls_stream, stream_index)->bandwidth;
+}
+
+// BBA0
+#define BBA0_RESERVOIR 90
+#define BBA0_CUSHION 126
+#define BBA0_BUFFER_SIZE 240
+static uint64_t BBA0_f(stream_sys_t *p_sys)
+{
+    hls_stream_t *hlsMax = hls_GetLast(p_sys->hls_stream);
+    hls_stream_t *hlsMin = hls_GetFirst(p_sys->hls_stream);
+    uint64_t rMax = hlsMax->bandwidth;
+    uint64_t rMin = hlsMin->bandwidth;
+
+    if (p_sys->playback.buffer_size < BBA0_RESERVOIR)
+        return rMin;
+    if (p_sys->playback.buffer_size >= BBA0_RESERVOIR + BBA0_CUSHION)
+        return rMax;
+    int slope = (rMax-rMin) / BBA0_CUSHION;
+    return rMin + slope * (p_sys->playback.buffer_size - BBA0_RESERVOIR);
+    //printf("%"PRIu64", %"PRIu64"");
+}
+static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
+{
+    if (p_sys->playback.buffer_size >= BBA0_BUFFER_SIZE)
+        return -1;
+
+    int count = vlc_array_count(p_sys->hls_stream);
+    int max_stream = count-1;
+    int min_stream = 0;
+
+    // simple cases...
+    if (p_sys->playback.buffer_size <= BBA0_RESERVOIR)
+        return min_stream;
+    if (p_sys->playback.buffer_size >= BBA0_RESERVOIR + BBA0_CUSHION)
+        return max_stream;
+
+    // now serious business!
+    uint64_t calculated_rate = BBA0_f(p_sys);
+    int prev_stream = p_sys->download.stream;
+    int plus_stream = max_stream;
+    if (prev_stream != max_stream)
+        plus_stream = prev_stream + 1;
+    int minus_stream = min_stream;
+    if (prev_stream != min_stream)
+        minus_stream = prev_stream - 1;
+
+    int stream_over_calculated_rate = max_stream;
+    int stream_under_calculated_rate = min_stream;
+    for (int n = 0; n < count; n++)
+    {
+        uint64_t bw = hls_GetStreamBandwidth(p_sys, n);
+        if (bw > calculated_rate && bw < hls_GetStreamBandwidth(p_sys, stream_over_calculated_rate))
+            stream_over_calculated_rate = n;
+        if (bw < calculated_rate && bw > hls_GetStreamBandwidth(p_sys, stream_under_calculated_rate))
+            stream_under_calculated_rate = n;
+    }
+
+    if (calculated_rate >= hls_GetStreamBandwidth(p_sys, plus_stream))
+        return stream_under_calculated_rate;
+    if (calculated_rate <= hls_GetStreamBandwidth(p_sys, minus_stream))
+        return stream_over_calculated_rate;
+
+    return prev_stream;
+}
 
 /****************************************************************************
  *
@@ -1602,6 +1708,9 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
         return VLC_EGENERIC;
     }
     mtime_t duration = mdate() - start;
+    hls_stringAppend(p_sys->download.composition, *cur_stream);
+    //p_sys->buffer_size += segment->size;
+    p_sys->download.total_seconds += segment->duration;
     if (hls->bandwidth == 0 && segment->duration > 0)
     {
         /* Try to estimate the bandwidth for this stream */
@@ -1621,12 +1730,14 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
                 segment->sequence, *cur_stream);
 
     uint64_t bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
+    //printf("CURRENT BANDWIDTH: %"PRIu64"bits/s\n", bw);
     p_sys->bandwidth = bw;
+    /* kill the original algorithm
     if (p_sys->b_meta && (hls->bandwidth != bw))
     {
         int newstream = BandwidthAdaptation(s, hls->id, &bw);
 
-        /* FIXME: we need an average here */
+        / * FIXME: we need an average here * /
         if ((newstream >= 0) && (newstream != *cur_stream))
         {
             msg_Dbg(s, "detected %s bandwidth (%"PRIu64") stream",
@@ -1634,6 +1745,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
             *cur_stream = newstream;
         }
     }
+    */
     return VLC_SUCCESS;
 }
 
@@ -1646,31 +1758,43 @@ static void* hls_Thread(void *p_this)
 
     while (vlc_object_alive(s))
     {
+        int next_stream;
+        vlc_mutex_lock(&p_sys->download.lock_wait);
+        while ((next_stream = BBA0(p_sys)) == -1) // buffer full
+        {
+            vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
+            if (!vlc_object_alive(s))
+                break;
+        }
+        p_sys->download.stream = next_stream;
+        vlc_mutex_unlock(&p_sys->download.lock_wait);
+
         hls_stream_t *hls = hls_Get(p_sys->hls_stream, p_sys->download.stream);
         assert(hls);
 
-        /* Sliding window (~60 seconds worth of movie) */
+        /* ol' code
+        / * Sliding window (~60 seconds worth of movie) * /
         vlc_mutex_lock(&hls->lock);
         int count = vlc_array_count(hls->segments);
         vlc_mutex_unlock(&hls->lock);
 
-        /* Is there a new segment to process? */
+        / * Is there a new segment to process? * /
         if ((!p_sys->b_live && (p_sys->playback.segment < (count - 6))) ||
             (p_sys->download.segment >= count))
         {
-            /* wait */
+            / * wait * /
             vlc_mutex_lock(&p_sys->download.lock_wait);
             while (((p_sys->download.segment - p_sys->playback.segment > 6) ||
                     (p_sys->download.segment >= count)) &&
                    (p_sys->download.seek == -1))
             {
                 vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
-                if (p_sys->b_live /*&& (mdate() >= p_sys->playlist.wakeup)*/)
+                if (p_sys->b_live / *&& (mdate() >= p_sys->playlist.wakeup)* /)
                     break;
                 if (!vlc_object_alive(s))
                     break;
             }
-            /* */
+            / * * /
             if (p_sys->download.seek >= 0)
             {
                 p_sys->download.segment = p_sys->download.seek;
@@ -1678,6 +1802,7 @@ static void* hls_Thread(void *p_this)
             }
             vlc_mutex_unlock(&p_sys->download.lock_wait);
         }
+        */
 
         if (!vlc_object_alive(s)) break;
 
@@ -1705,7 +1830,7 @@ static void* hls_Thread(void *p_this)
             p_sys->download.segment = p_sys->download.seek;
             p_sys->download.seek = -1;
         }
-        else if (p_sys->download.segment < count)
+        //else if (p_sys->download.segment < count)
             p_sys->download.segment++;
         vlc_cond_signal(&p_sys->download.wait);
         vlc_mutex_unlock(&p_sys->download.lock_wait);
@@ -2059,6 +2184,11 @@ static int Open(vlc_object_t *p_this)
     p_sys->b_live = true;
     p_sys->b_meta = false;
     p_sys->b_error = false;
+    //p_sys->buffer_size = 0;
+    p_sys->download.composition[0] = '\0';
+    p_sys->download.total_seconds = 0;
+    p_sys->playback.start_time = -1;
+    p_sys->playback.buffer_size = 0;
 
     p_sys->hls_stream = vlc_array_new();
     if (p_sys->hls_stream == NULL)
@@ -2327,6 +2457,8 @@ static ssize_t hls_Read(stream_t *s, uint8_t *p_read, unsigned int i_read)
     stream_sys_t *p_sys = s->p_sys;
     ssize_t used = 0;
 
+    //printf("hls_Read called, p_read=%"PRIu8", i_read=%d\n", *p_read, i_read);
+
     do
     {
         /* Determine next segment to read. If this is a meta playlist and
@@ -2441,6 +2573,24 @@ static int Read(stream_t *s, void *buffer, unsigned int i_read)
     }
 
     p_sys->playback.offset += length;
+    //p_sys->buffer_size -= length;
+
+    struct timespec current_timestamp;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
+    if (p_sys->playback.start_time == -1)
+    {
+      p_sys->playback.start_time = current_timestamp.tv_sec;
+      p_sys->playback.current_time = 0;
+    }
+    else
+    {
+      p_sys->playback.current_time = current_timestamp.tv_sec - p_sys->playback.start_time - PLAYBACK_DELAY;
+      if (p_sys->playback.current_time < 0)
+        p_sys->playback.current_time = 0;
+    }
+    p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time;
+
+    hls_printStatus(p_sys);
     return length;
 }
 
@@ -2539,6 +2689,8 @@ static int Peek(stream_t *s, const uint8_t **pp_peek, unsigned int i_peek)
 
 static bool hls_MaySeek(stream_t *s)
 {
+    return false; //otherwise the algorithm gets broken! :D
+    /*
     stream_sys_t *p_sys = s->p_sys;
 
     if (p_sys->hls_stream == NULL)
@@ -2559,6 +2711,7 @@ static bool hls_MaySeek(stream_t *s)
         return may_seek;
     }
     return true;
+    */
 }
 
 static uint64_t GetStreamSize(stream_t *s)
@@ -2704,6 +2857,8 @@ static int Control(stream_t *s, int i_query, va_list args)
             break;
         case STREAM_SET_PAUSE_STATE:
         {
+            return VLC_EGENERIC; // Sorry man, no pause. You don't want to break anything, right?
+            /*
             bool paused = va_arg (args, unsigned);
 
             vlc_mutex_lock(&p_sys->lock);
@@ -2711,6 +2866,7 @@ static int Control(stream_t *s, int i_query, va_list args)
             vlc_cond_signal(&p_sys->wait);
             vlc_mutex_unlock(&p_sys->lock);
             break;
+            */
         }
         case STREAM_SET_POSITION:
             if (hls_MaySeek(s))
