@@ -763,6 +763,16 @@ static int parse_SegmentInformation(hls_stream_t *hls, char *p_read, int *durati
             *duration = -1;
             return VLC_EGENERIC;
         }
+        if (*endptr == '.')
+        {
+            long dec = strtol(endptr + 1, &endptr, 10);
+            //don't look, that's very ugly (why strtof does not understand that . is a decimal separator?)
+            char str[50];
+            sprintf(str, "0,%ld", dec);
+            double tosum = strtof(str, &endptr);
+            d += tosum;
+        }
+
         if ((d) - ((int)d) >= 0.5)
             value = ((int)d) + 1;
         else
