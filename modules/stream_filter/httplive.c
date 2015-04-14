@@ -199,14 +199,18 @@ static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
 static int last_second = -1;
+static int last_downloaded = -1;
 static void hls_printStatus(stream_sys_t *p_sys)
 {
     // once a second is enough
-    if (p_sys->playback.current_time == last_second) return;
+    if (last_second == p_sys->playback.current_time && last_downloaded == p_sys->download.segment) return;
     last_second = p_sys->playback.current_time;
+    last_downloaded = p_sys->download.segment;
 
     printf("CURRENT TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
       p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, BBA0(p_sys), p_sys->download.composition);
+    //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
+    fflush(stdout);
 }
 
 static void hls_stringAppend(char *str, int number)
@@ -767,9 +771,10 @@ static int parse_SegmentInformation(hls_stream_t *hls, char *p_read, int *durati
         {
             long dec = strtol(endptr + 1, &endptr, 10);
             //don't look, that's very ugly (why strtof does not understand that . is a decimal separator?)
-            char str[50];
-            sprintf(str, "0,%ld", dec);
+            char* str;
+            asprintf(&str, "0,%ld", dec);
             double tosum = strtof(str, &endptr);
+            free(str);
             d += tosum;
         }
 
@@ -2235,7 +2240,7 @@ static int Open(vlc_object_t *p_this)
            sizeof( hls_stream_t* ), &hls_CompareStreams );
 
     /* Choose first HLS stream to start with */
-    int current = p_sys->playback.stream = p_sys->hls_stream->i_count-1;
+    int current = p_sys->playback.stream = 0;
     p_sys->playback.segment = p_sys->download.segment = ChooseSegment(s, current);
 
     /* manage encryption key if needed */
@@ -2277,6 +2282,11 @@ static int Open(vlc_object_t *p_this)
             vlc_join(p_sys->reload, NULL);
         goto fail_thread;
     }
+
+    struct timespec current_timestamp;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
+    p_sys->playback.start_time = current_timestamp.tv_sec;
+    p_sys->playback.current_time = 0;
 
     return VLC_SUCCESS;
 
@@ -2467,8 +2477,6 @@ static ssize_t hls_Read(stream_t *s, uint8_t *p_read, unsigned int i_read)
     stream_sys_t *p_sys = s->p_sys;
     ssize_t used = 0;
 
-    //printf("hls_Read called, p_read=%"PRIu8", i_read=%d\n", *p_read, i_read);
-
     do
     {
         /* Determine next segment to read. If this is a meta playlist and
@@ -2587,17 +2595,9 @@ static int Read(stream_t *s, void *buffer, unsigned int i_read)
 
     struct timespec current_timestamp;
     clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
-    if (p_sys->playback.start_time == -1)
-    {
-      p_sys->playback.start_time = current_timestamp.tv_sec;
-      p_sys->playback.current_time = 0;
-    }
-    else
-    {
-      p_sys->playback.current_time = current_timestamp.tv_sec - p_sys->playback.start_time - PLAYBACK_DELAY;
-      if (p_sys->playback.current_time < 0)
+    p_sys->playback.current_time = current_timestamp.tv_sec - p_sys->playback.start_time - PLAYBACK_DELAY;
+    if (p_sys->playback.current_time < 0)
         p_sys->playback.current_time = 0;
-    }
     p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time;
 
     hls_printStatus(p_sys);
