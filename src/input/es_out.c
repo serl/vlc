@@ -573,13 +573,16 @@ static void EsOutChangePosition( es_out_t *out )
     {
         es_out_id_t *p_es = p_sys->es[i];
 
-        if( !p_es->p_dec )
-            continue;
-
-        input_DecoderStartWait( p_es->p_dec );
-
-        if( p_es->p_dec_record )
-            input_DecoderStartWait( p_es->p_dec_record );
+        if( p_es->p_dec != NULL )
+        {
+            input_DecoderFlush( p_es->p_dec );
+            if( !p_sys->b_buffering )
+            {
+                input_DecoderStartWait( p_es->p_dec );
+                if( p_es->p_dec_record != NULL )
+                    input_DecoderStartWait( p_es->p_dec_record );
+            }
+        }
     }
 
     for( int i = 0; i < p_sys->i_pgrm; i++ )
@@ -2034,7 +2037,7 @@ static void EsOutDel( es_out_t *out, es_out_id_t *es )
     /* We don't try to reselect */
     if( es->p_dec )
     {
-        while( vlc_object_alive(p_sys->p_input) && !p_sys->b_buffering && es->p_dec )
+        while( vlc_object_alive(p_sys->p_input) && !p_sys->b_buffering )
         {
             if( input_DecoderIsEmpty( es->p_dec ) &&
                 ( !es->p_dec_record || input_DecoderIsEmpty( es->p_dec_record ) ))
@@ -2681,15 +2684,8 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
     {
         for (int i = 0; i < p_sys->i_es; i++) {
             es_out_id_t *id = p_sys->es[i];
-            decoder_t *p_dec = id->p_dec;
-            if (!p_dec)
-                continue;
-            block_t *p_block = block_Alloc(0);
-            if( !p_block )
-                break;
-
-            p_block->i_flags |= BLOCK_FLAG_CORE_EOS;
-            input_DecoderDecode(p_dec, p_block, false);
+            if (id->p_dec != NULL)
+                input_DecoderDrain(id->p_dec);
         }
         return VLC_SUCCESS;
     }

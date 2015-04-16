@@ -35,7 +35,14 @@
 #include "item.h"
 #include "info.h"
 
-static int GuessType( const input_item_t *p_item );
+struct input_item_opaque
+{
+    struct input_item_opaque *next;
+    void *value;
+    char name[1];
+};
+
+static int GuessType( const input_item_t *p_item, bool *p_net );
 
 void input_item_SetErrorWhenReading( input_item_t *p_i, bool b_error )
 {
@@ -306,7 +313,7 @@ void input_item_SetURI( input_item_t *p_i, const char *psz_uri )
     free( p_i->psz_uri );
     p_i->psz_uri = strdup( psz_uri );
 
-    p_i->i_type = GuessType( p_i );
+    p_i->i_type = GuessType( p_i, &p_i->b_net );
 
     if( p_i->psz_name )
         ;
@@ -423,6 +430,17 @@ bool input_item_IsArtFetched( input_item_t *p_item )
     return b_fetched;
 }
 
+bool input_item_ShouldPreparseSubItems( input_item_t *p_item )
+{
+    bool b_ret;
+
+    vlc_mutex_lock( &p_item->lock );
+    b_ret = p_item->i_preparse_depth == -1 ? true : p_item->i_preparse_depth > 0;
+    vlc_mutex_unlock( &p_item->lock );
+
+    return b_ret;
+}
+
 input_item_t *input_item_Hold( input_item_t *p_item )
 {
     input_item_owner_t *owner = item_owner(p_item);
@@ -450,6 +468,12 @@ void input_item_Release( input_item_t *p_item )
 
     if( p_item->p_meta != NULL )
         vlc_meta_Delete( p_item->p_meta );
+
+    for( input_item_opaque_t *o = p_item->opaques, *next; o != NULL; o = next )
+    {
+        next = o->next;
+        free( o );
+    }
 
     for( int i = 0; i < p_item->i_options; i++ )
         free( p_item->ppsz_options[i] );
@@ -505,6 +529,43 @@ int input_item_AddOption( input_item_t *p_input, const char *psz_option,
 out:
     vlc_mutex_unlock( &p_input->lock );
     return err;
+}
+
+int input_item_AddOpaque(input_item_t *item, const char *name, void *value)
+{
+    assert(name != NULL);
+
+    size_t namelen = strlen(name);
+    input_item_opaque_t *entry = malloc(sizeof (*entry) + namelen);
+    if (unlikely(entry == NULL))
+        return VLC_ENOMEM;
+
+    memcpy(entry->name, name, namelen + 1);
+    entry->value = value;
+
+    vlc_mutex_lock(&item->lock);
+    entry->next = item->opaques;
+    item->opaques = entry;
+    vlc_mutex_unlock(&item->lock);
+    return VLC_SUCCESS;
+}
+
+void input_item_ApplyOptions(vlc_object_t *obj, input_item_t *item)
+{
+    vlc_mutex_lock(&item->lock);
+    assert(item->optflagc == (unsigned)item->i_options);
+
+    for (unsigned i = 0; i < (unsigned)item->i_options; i++)
+        var_OptionParse(obj, item->ppsz_options[i],
+                        !!(item->optflagv[i] & VLC_INPUT_OPTION_TRUSTED));
+
+    for (const input_item_opaque_t *o = item->opaques; o != NULL; o = o->next)
+    {
+        var_Create(obj, o->name, VLC_VAR_ADDRESS);
+        var_SetAddress(obj, o->name, o->value);
+    }
+
+    vlc_mutex_unlock(&item->lock);
 }
 
 static info_category_t *InputItemFindCat( input_item_t *p_item,
@@ -831,9 +892,10 @@ input_item_t *input_item_NewExt( const char *psz_uri,
 
 
 input_item_t *
-input_item_NewWithType( const char *psz_uri, const char *psz_name,
-                        int i_options, const char *const *ppsz_options,
-                        unsigned flags, mtime_t duration, int type )
+input_item_NewWithTypeExt( const char *psz_uri, const char *psz_name,
+                           int i_options, const char *const *ppsz_options,
+                           unsigned flags, mtime_t duration, int type,
+                           int i_net )
 {
     static atomic_uint last_input_id = ATOMIC_VAR_INIT(0);
 
@@ -864,6 +926,7 @@ input_item_NewWithType( const char *psz_uri, const char *psz_name,
     p_input->optflagv = NULL;
     for( int i = 0; i < i_options; i++ )
         input_item_AddOption( p_input, ppsz_options[i], flags );
+    p_input->opaques = NULL;
 
     p_input->i_duration = duration;
     TAB_INIT( p_input->i_categories, p_input->pp_categories );
@@ -886,7 +949,22 @@ input_item_NewWithType( const char *psz_uri, const char *psz_name,
     if( type != ITEM_TYPE_UNKNOWN )
         p_input->i_type = type;
     p_input->b_error_when_reading = false;
+
+    if( i_net != -1 )
+        p_input->b_net = !!i_net;
+    else if( p_input->i_type == ITEM_TYPE_STREAM )
+        p_input->b_net = true;
     return p_input;
+}
+
+input_item_t *
+input_item_NewWithType( const char *psz_uri, const char *psz_name,
+                        int i_options, const char *const *ppsz_options,
+                        unsigned flags, mtime_t duration, int type )
+{
+    return input_item_NewWithTypeExt( psz_uri, psz_name, i_options,
+                                      ppsz_options, flags, duration, type,
+                                      -1 );
 }
 
 input_item_t *input_item_Copy( input_item_t *p_input )
@@ -923,6 +1001,7 @@ struct item_type_entry
 {
     const char psz_scheme[7];
     uint8_t    i_type;
+    bool       b_net;
 };
 
 static int typecmp( const void *key, const void *entry )
@@ -934,61 +1013,62 @@ static int typecmp( const void *key, const void *entry )
 }
 
 /* Guess the type of the item using the beginning of the mrl */
-static int GuessType( const input_item_t *p_item )
+static int GuessType( const input_item_t *p_item, bool *p_net )
 {
     static const struct item_type_entry tab[] =
     {   /* /!\ Alphabetical order /!\ */
         /* Short match work, not just exact match */
-        { "alsa",   ITEM_TYPE_CARD },
-        { "atsc",   ITEM_TYPE_CARD },
-        { "bd",     ITEM_TYPE_DISC },
-        { "cable",  ITEM_TYPE_CARD },
-        { "cdda",   ITEM_TYPE_CDDA },
-        { "cqam",   ITEM_TYPE_CARD },
-        { "dc1394", ITEM_TYPE_CARD },
-        { "dccp",   ITEM_TYPE_NET },
-        { "deckli", ITEM_TYPE_CARD }, /* decklink */
-        { "dir",    ITEM_TYPE_DIRECTORY },
-        { "dshow",  ITEM_TYPE_CARD },
-        { "dv",     ITEM_TYPE_CARD },
-        { "dvb",    ITEM_TYPE_CARD },
-        { "dvd",    ITEM_TYPE_DISC },
-        { "dtv",    ITEM_TYPE_CARD },
-        { "eyetv",  ITEM_TYPE_CARD },
-        { "fd",     ITEM_TYPE_UNKNOWN },
-        { "ftp",    ITEM_TYPE_NET },
-        { "http",   ITEM_TYPE_NET },
-        { "icyx",   ITEM_TYPE_NET },
-        { "imem",   ITEM_TYPE_UNKNOWN },
-        { "itpc",   ITEM_TYPE_NET },
-        { "jack",   ITEM_TYPE_CARD },
-        { "linsys", ITEM_TYPE_CARD },
-        { "live",   ITEM_TYPE_NET }, /* livedotcom */
-        { "mms",    ITEM_TYPE_NET },
-        { "mtp",    ITEM_TYPE_DISC },
-        { "ofdm",   ITEM_TYPE_CARD },
-        { "oss",    ITEM_TYPE_CARD },
-        { "pnm",    ITEM_TYPE_NET },
-        { "qam",    ITEM_TYPE_CARD },
-        { "qpsk",   ITEM_TYPE_CARD },
-        { "qtcapt", ITEM_TYPE_CARD }, /* qtcapture */
-        { "raw139", ITEM_TYPE_CARD }, /* raw1394 */
-        { "rt",     ITEM_TYPE_NET }, /* rtp, rtsp, rtmp */
-        { "satell", ITEM_TYPE_CARD }, /* sattelite */
-        { "screen", ITEM_TYPE_CARD },
-        { "sdp",    ITEM_TYPE_NET },
-        { "sftp",   ITEM_TYPE_NET },
-        { "shm",    ITEM_TYPE_CARD },
-        { "smb",    ITEM_TYPE_NET },
-        { "svcd",   ITEM_TYPE_DISC },
-        { "tcp",    ITEM_TYPE_NET },
-        { "terres", ITEM_TYPE_CARD }, /* terrestrial */
-        { "udp",    ITEM_TYPE_NET },  /* udplite too */
-        { "unsv",   ITEM_TYPE_NET },
-        { "usdigi", ITEM_TYPE_CARD }, /* usdigital */
-        { "v4l",    ITEM_TYPE_CARD },
-        { "vcd",    ITEM_TYPE_DISC },
-        { "window", ITEM_TYPE_CARD },
+        { "alsa",   ITEM_TYPE_CARD, false },
+        { "atsc",   ITEM_TYPE_CARD, false },
+        { "bluray", ITEM_TYPE_DISC, false },
+        { "bd",     ITEM_TYPE_DISC, false },
+        { "cable",  ITEM_TYPE_CARD, false },
+        { "cdda",   ITEM_TYPE_DISC, false },
+        { "cqam",   ITEM_TYPE_CARD, false },
+        { "dc1394", ITEM_TYPE_CARD, false },
+        { "dccp",   ITEM_TYPE_STREAM, true },
+        { "deckli", ITEM_TYPE_CARD, false }, /* decklink */
+        { "dir",    ITEM_TYPE_DIRECTORY, false },
+        { "dshow",  ITEM_TYPE_CARD, false },
+        { "dv",     ITEM_TYPE_CARD, false },
+        { "dvb",    ITEM_TYPE_CARD, false },
+        { "dvd",    ITEM_TYPE_DISC, false },
+        { "dtv",    ITEM_TYPE_CARD, false },
+        { "eyetv",  ITEM_TYPE_CARD, false },
+        { "fd",     ITEM_TYPE_UNKNOWN, false },
+        { "ftp",    ITEM_TYPE_FILE, true },
+        { "http",   ITEM_TYPE_FILE, true },
+        { "icyx",   ITEM_TYPE_STREAM, true },
+        { "imem",   ITEM_TYPE_UNKNOWN, false },
+        { "itpc",   ITEM_TYPE_PLAYLIST, true },
+        { "jack",   ITEM_TYPE_CARD, false },
+        { "linsys", ITEM_TYPE_CARD, false },
+        { "live",   ITEM_TYPE_STREAM, true }, /* livedotcom */
+        { "mms",    ITEM_TYPE_STREAM, true },
+        { "mtp",    ITEM_TYPE_DISC, false },
+        { "ofdm",   ITEM_TYPE_CARD, false },
+        { "oss",    ITEM_TYPE_CARD, false },
+        { "pnm",    ITEM_TYPE_STREAM, true },
+        { "qam",    ITEM_TYPE_CARD, false },
+        { "qpsk",   ITEM_TYPE_CARD, false },
+        { "qtcapt", ITEM_TYPE_CARD, false }, /* qtcapture */
+        { "raw139", ITEM_TYPE_CARD, false }, /* raw1394 */
+        { "rt",     ITEM_TYPE_STREAM, true }, /* rtp, rtsp, rtmp */
+        { "satell", ITEM_TYPE_CARD, false }, /* sattelite */
+        { "screen", ITEM_TYPE_CARD, false },
+        { "sdp",    ITEM_TYPE_STREAM, true },
+        { "sftp",   ITEM_TYPE_FILE, true },
+        { "shm",    ITEM_TYPE_CARD, false },
+        { "smb",    ITEM_TYPE_FILE, true },
+        { "svcd",   ITEM_TYPE_DISC, false },
+        { "tcp",    ITEM_TYPE_STREAM, true },
+        { "terres", ITEM_TYPE_CARD, false }, /* terrestrial */
+        { "udp",    ITEM_TYPE_STREAM, true },  /* udplite too */
+        { "unsv",   ITEM_TYPE_STREAM, true },
+        { "usdigi", ITEM_TYPE_CARD, false }, /* usdigital */
+        { "v4l",    ITEM_TYPE_CARD, false },
+        { "vcd",    ITEM_TYPE_DISC, false },
+        { "window", ITEM_TYPE_CARD, false },
     };
     const struct item_type_entry *e;
 
@@ -997,7 +1077,15 @@ static int GuessType( const input_item_t *p_item )
 
     e = bsearch( p_item->psz_uri, tab, sizeof( tab ) / sizeof( tab[0] ),
                  sizeof( tab[0] ), typecmp );
-    return e ? e->i_type : ITEM_TYPE_FILE;
+    if( e )
+    {
+        *p_net = e->b_net;
+        return e->i_type;
+    } else
+    {
+        *p_net = false;
+        return ITEM_TYPE_FILE;
+    }
 }
 
 input_item_node_t *input_item_node_Create( input_item_t *p_input )
@@ -1045,8 +1133,19 @@ void input_item_node_Delete( input_item_node_t *p_node )
 
 input_item_node_t *input_item_node_AppendItem( input_item_node_t *p_node, input_item_t *p_item )
 {
+    int i_preparse_depth;
     input_item_node_t *p_new_child = input_item_node_Create( p_item );
     if( !p_new_child ) return NULL;
+
+    vlc_mutex_lock( &p_node->p_item->lock );
+    vlc_mutex_lock( &p_item->lock );
+    i_preparse_depth = p_node->p_item->i_preparse_depth;
+    p_item->i_preparse_depth = i_preparse_depth > 0 ?
+                               i_preparse_depth -1 :
+                               i_preparse_depth;
+    vlc_mutex_unlock( &p_item->lock );
+    vlc_mutex_unlock( &p_node->p_item->lock );
+
     input_item_node_AppendNode( p_node, p_new_child );
     return p_new_child;
 }

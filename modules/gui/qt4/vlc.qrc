@@ -79,7 +79,6 @@
     </qresource>
     <qresource prefix="/type">
         <file alias="capture-card">pixmaps/types/capture-card_16px.png</file>
-        <file alias="cdda">pixmaps/types/cdda_16px.png</file>
         <file alias="disc">pixmaps/types/disc_16px.png</file>
         <file alias="file-asym">pixmaps/types/file-asym_16px.png</file>
         <file alias="file-wide">pixmaps/types/file-wide_16px.png</file>
@@ -87,7 +86,7 @@
         <file alias="network">pixmaps/types/network_16px.png</file>
         <file alias="directory">pixmaps/types/type_directory.png</file>
         <file alias="file">pixmaps/types/type_file.png</file>
-        <file alias="net">pixmaps/types/type_net.png</file>
+        <file alias="stream">pixmaps/types/type_stream.png</file>
         <file alias="node">pixmaps/types/type_node.png</file>
         <file alias="playlist">pixmaps/types/type_playlist.png</file>
     </qresource>

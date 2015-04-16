@@ -451,6 +451,14 @@ static int Open( vlc_object_t * p_this )
                     tk->i_samplesize = 0; /* ADTS/AAC VBR */
                 }
 
+                /* Fix broken scale/rate */
+                if ( tk->i_codec == VLC_CODEC_ADPCM_IMA_WAV &&
+                     tk->i_samplesize && tk->i_samplesize > tk->i_rate )
+                {
+                    tk->i_scale = 1017;
+                    tk->i_rate = p_auds->p_wf->nSamplesPerSec;
+                }
+
                 es_format_Init( &fmt, AUDIO_ES, tk->i_codec );
 
                 fmt.audio.i_channels        = p_auds->p_wf->nChannels;
@@ -2321,11 +2329,22 @@ static int AVI_IndexFind_idx1( demux_t *p_demux,
             *pi_offset = 0;
         else
             *pi_offset = i_movi_content;
+
+        if( p_idx1->i_entry_count )
+        {
+            /* Invalidate offset if index refers past the data section to avoid false
+               positives when the offset equals sample size */
+            size_t i_dataend = *pi_offset + p_idx1->entry[p_idx1->i_entry_count - 1].i_pos +
+                                            p_idx1->entry[p_idx1->i_entry_count - 1].i_length;
+            if( i_dataend > p_movi->i_chunk_pos + p_movi->i_chunk_size )
+                *pi_offset = 0;
+        }
     }
     else
     {
         *pi_offset = 0;
     }
+
     return VLC_SUCCESS;
 }
 

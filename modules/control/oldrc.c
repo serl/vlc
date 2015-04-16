@@ -1,5 +1,5 @@
 /*****************************************************************************
- * rc.c : remote control stdin/stdout module for vlc
+ * oldrc.c : remote control stdin/stdout module for vlc
  *****************************************************************************
  * Copyright (C) 2004-2009 the VideoLAN team
  * $Id$
@@ -35,6 +35,7 @@
 #include <assert.h>
 #include <math.h>
 
+#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>

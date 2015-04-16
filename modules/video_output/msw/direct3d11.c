@@ -66,14 +66,32 @@ vlc_module_end ()
 typedef struct
 {
     const char   *name;
-    DXGI_FORMAT  format;
+    DXGI_FORMAT  formatTexture;
     vlc_fourcc_t fourcc;
+    DXGI_FORMAT  formatY;
+    DXGI_FORMAT  formatUV;
 } d3d_format_t;
 
 static const d3d_format_t d3d_formats[] = {
-    { "NV12",   DXGI_FORMAT_NV12,             VLC_CODEC_NV12  },
-    { "RGBA",   DXGI_FORMAT_R8G8B8A8_UNORM,   VLC_CODEC_RGBA  },
-    { NULL, 0, 0 }
+    { "I420",     DXGI_FORMAT_NV12,           VLC_CODEC_I420,     DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM },
+    { "YV12",     DXGI_FORMAT_NV12,           VLC_CODEC_YV12,     DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM },
+    { "NV12",     DXGI_FORMAT_NV12,           VLC_CODEC_NV12,     DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM },
+#ifdef BROKEN_PIXEL
+    { "YUY2",     DXGI_FORMAT_YUY2,           VLC_CODEC_I422,     DXGI_FORMAT_R8G8B8A8_UNORM,     0 },
+    { "AYUV",     DXGI_FORMAT_AYUV,           VLC_CODEC_YUVA,     DXGI_FORMAT_R8G8B8A8_UNORM,     0 },
+    { "Y416",     DXGI_FORMAT_Y416,           VLC_CODEC_I444_16L, DXGI_FORMAT_R16G16B16A16_UINT,  0 },
+#endif
+#ifdef UNTESTED
+    { "P010",     DXGI_FORMAT_P010,           VLC_CODEC_I420_10L, DXGI_FORMAT_R16_UNORM,          DXGI_FORMAT_R16_UNORM },
+    { "Y210",     DXGI_FORMAT_Y210,           VLC_CODEC_I422_10L, DXGI_FORMAT_R16G16B16A16_UNORM, 0 },
+    { "Y410",     DXGI_FORMAT_Y410,           VLC_CODEC_I444_10L, DXGI_FORMAT_R10G10B10A2_UNORM,  0 },
+    { "NV11",     DXGI_FORMAT_NV11,           VLC_CODEC_I411,     DXGI_FORMAT_R8_UNORM,           DXGI_FORMAT_R8G8_UNORM },
+#endif
+    { "R8G8B8X8", DXGI_FORMAT_B8G8R8X8_UNORM, VLC_CODEC_RGB32,    DXGI_FORMAT_B8G8R8X8_UNORM,     0 },
+    { "B8G8R8A8", DXGI_FORMAT_B8G8R8A8_UNORM, VLC_CODEC_BGRA,     DXGI_FORMAT_B8G8R8A8_UNORM,     0 },
+    { "B5G6R5",   DXGI_FORMAT_B5G6R5_UNORM,   VLC_CODEC_RGB16,    DXGI_FORMAT_B5G6R5_UNORM,       0 },
+
+    { NULL, 0, 0, 0, 0}
 };
 
 static const vlc_fourcc_t d3d_subpicture_chromas[] = {
@@ -85,6 +103,7 @@ struct picture_sys_t
 {
     ID3D11Texture2D     *texture;
     ID3D11DeviceContext *context;
+    vout_display_t      *vd;
 };
 
 static int  Open(vlc_object_t *);
@@ -93,7 +112,7 @@ static void Close(vlc_object_t *object);
 static void Prepare(vout_display_t *, picture_t *, subpicture_t *subpicture);
 static void Display(vout_display_t *, picture_t *, subpicture_t *subpicture);
 
-static int  Direct3D11Create (vout_display_t *);
+static HINSTANCE Direct3D11LoadShaderLibrary(void);
 static void Direct3D11Destroy(vout_display_t *);
 
 static int  Direct3D11Open (vout_display_t *, video_format_t *);
@@ -104,9 +123,9 @@ static void Direct3D11DestroyResources(vout_display_t *);
 
 static int  Direct3D11MapTexture(picture_t *);
 
-/* All the #if 0 contain an alternative method to setup dx11
+/* All the #if USE_DXGI contain an alternative method to setup dx11
    They both need to be benchmarked to see which performs better */
-#if 0
+#if USE_DXGI
 /* I have no idea why MS decided dxgi headers do not define this
    As they do have prototypes for d3d11 functions */
 typedef HRESULT(WINAPI *PFN_CREATE_DXGI_FACTORY)(REFIID riid, void **ppFactory);
@@ -151,7 +170,89 @@ static const char* globPixelShaderDefault = "\
   }\
 ";
 
-static const char* globPixelShaderBiplanarYUV2RGB = "\
+static const char *globPixelShaderBiplanarI420_BT601_2RGB = "\
+  Texture2D shaderTextureY;\
+  Texture2D shaderTextureUV;\
+  SamplerState SampleType;\
+  \
+  struct PS_INPUT\
+  {\
+    float4 Position   : SV_POSITION;\
+    float2 Texture    : TEXCOORD0;\
+  };\
+  \
+  float4 PS( PS_INPUT In ) : SV_TARGET\
+  {\
+    float Y;\
+    float UCb;\
+    float VCr;\
+    float2 UCbPos;\
+    float2 VCrPos;\
+    float4 rgba;\
+    \
+    Y  = shaderTextureY.Sample(SampleType, In.Texture).x;\
+    \
+    VCrPos = In.Texture / 2;\
+    VCr = shaderTextureUV.Sample(SampleType, VCrPos).x;\
+    \
+    UCbPos = In.Texture / 2;\
+    UCbPos.y = UCbPos.y + 0.5;\
+    UCb = shaderTextureUV.Sample(SampleType, UCbPos).x;\
+    \
+    Y = 1.164383561643836 * (Y - 0.0625);\
+    UCb = UCb - 0.5;\
+    VCr = VCr - 0.5;\
+    \
+    rgba.x = saturate(Y + 1.596026785714286 * VCr);\
+    rgba.y = saturate(Y - 0.812967647237771 * VCr - 0.391762290094914 * UCb);\
+    rgba.z = saturate(Y + 2.017232142857142 * UCb);\
+    rgba.w = 1.0;\
+    return rgba;\
+  }\
+";
+
+static const char *globPixelShaderBiplanarI420_BT709_2RGB = "\
+  Texture2D shaderTextureY;\
+  Texture2D shaderTextureUV;\
+  SamplerState SampleType;\
+  \
+  struct PS_INPUT\
+  {\
+    float4 Position   : SV_POSITION;\
+    float2 Texture    : TEXCOORD0;\
+  };\
+  \
+  float4 PS( PS_INPUT In ) : SV_TARGET\
+  {\
+    float Y;\
+    float UCb;\
+    float VCr;\
+    float2 UCbPos;\
+    float2 VCrPos;\
+    float4 rgba;\
+    \
+    Y  = shaderTextureY.Sample(SampleType, In.Texture).x;\
+    \
+    VCrPos = In.Texture / 2;\
+    VCr = shaderTextureUV.Sample(SampleType, VCrPos).x;\
+    \
+    UCbPos = In.Texture / 2;\
+    UCbPos.y = UCbPos.y + 0.5;\
+    UCb = shaderTextureUV.Sample(SampleType, UCbPos).x;\
+    \
+    Y = 1.164383561643836 * (Y - 0.0625);\
+    UCb = UCb - 0.5;\
+    VCr = VCr - 0.5;\
+    \
+    rgba.x = saturate(Y + 1.792741071428571 * VCr);\
+    rgba.y = saturate(Y - 0.532909328559444 * VCr - 0.21324861427373 * UCb);\
+    rgba.z = saturate(Y + 2.112401785714286 * UCb);\
+    rgba.w = 1.0;\
+    return rgba;\
+  }\
+";
+
+static const char *globPixelShaderBiplanarYUV_BT601_2RGB = "\
   Texture2D shaderTextureY;\
   Texture2D shaderTextureUV;\
   SamplerState SampleType;\
@@ -168,12 +269,40 @@ static const char* globPixelShaderBiplanarYUV2RGB = "\
     float4 rgba;\
     yuv.x  = shaderTextureY.Sample(SampleType, In.Texture).x;\
     yuv.yz = shaderTextureUV.Sample(SampleType, In.Texture).xy;\
-    yuv.x  = 1.164 * (yuv.x-0.0625);\
+    yuv.x  = 1.164383561643836 * (yuv.x-0.0625);\
     yuv.y  = yuv.y - 0.5;\
     yuv.z  = yuv.z - 0.5;\
-    rgba.x = saturate(yuv.x + 1.596 * yuv.z);\
-    rgba.y = saturate(yuv.x - 0.813 * yuv.z - 0.391 * yuv.y);\
-    rgba.z = saturate(yuv.x + 2.018 * yuv.y);\
+    rgba.x = saturate(yuv.x + 1.596026785714286 * yuv.z);\
+    rgba.y = saturate(yuv.x - 0.812967647237771 * yuv.z - 0.391762290094914 * yuv.y);\
+    rgba.z = saturate(yuv.x + 2.017232142857142 * yuv.y);\
+    rgba.w = 1.0;\
+    return rgba;\
+  }\
+";
+
+static const char *globPixelShaderBiplanarYUV_BT709_2RGB = "\
+  Texture2D shaderTextureY;\
+  Texture2D shaderTextureUV;\
+  SamplerState SampleType;\
+  \
+  struct PS_INPUT\
+  {\
+    float4 Position   : SV_POSITION;\
+    float2 Texture    : TEXCOORD0;\
+  };\
+  \
+  float4 PS( PS_INPUT In ) : SV_TARGET\
+  {\
+    float3 yuv;\
+    float4 rgba;\
+    yuv.x  = shaderTextureY.Sample(SampleType, In.Texture).x;\
+    yuv.yz = shaderTextureUV.Sample(SampleType, In.Texture).xy;\
+    yuv.x  = 1.164383561643836 * (yuv.x-0.0625);\
+    yuv.y  = yuv.y - 0.5;\
+    yuv.z  = yuv.z - 0.5;\
+    rgba.x = saturate(yuv.x + 1.792741071428571 * yuv.z);\
+    rgba.y = saturate(yuv.x - 0.532909328559444 * yuv.z - 0.21324861427373 * yuv.y);\
+    rgba.z = saturate(yuv.x + 2.112401785714286 * yuv.y);\
     rgba.w = 1.0;\
     return rgba;\
   }\
@@ -183,18 +312,101 @@ static int Open(vlc_object_t *object)
 {
     vout_display_t *vd = (vout_display_t *)object;
 
-    if (Direct3D11Create(vd)) {
-        msg_Err(vd, "Direct3D11 could not be initialized");
+#if !VLC_WINSTORE_APP
+    HINSTANCE hd3d11_dll = LoadLibrary(TEXT("D3D11.DLL"));
+    if (!hd3d11_dll) {
+        msg_Warn(vd, "cannot load d3d11.dll, aborting");
+        return VLC_EGENERIC;
+    }
+
+    HINSTANCE hd3dcompiler_dll = Direct3D11LoadShaderLibrary();
+    if (!hd3dcompiler_dll) {
+        msg_Err(vd, "cannot load d3dcompiler.dll, aborting");
+        FreeLibrary(hd3d11_dll);
+        return VLC_EGENERIC;
+    }
+
+# if USE_DXGI
+    HINSTANCE hdxgi_dll = LoadLibrary(TEXT("DXGI.DLL"));
+    if (!hdxgi_dll) {
+        msg_Warn(vd, "cannot load dxgi.dll, aborting");
+        return VLC_EGENERIC;
+    }
+# endif
+
+#else
+    IDXGISwapChain1* dxgiswapChain  = var_InheritInteger(vd, "winrt-dxgiswapchain");
+    if (!dxgiswapChain)
+        return VLC_EGENERIC;
+    ID3D11Device* d3ddevice         = var_InheritInteger(vd, "winrt-d3ddevice");
+    if (!d3ddevice)
+        return VLC_EGENERIC;
+    ID3D11DeviceContext* d3dcontext = var_InheritInteger(vd, "winrt-d3dcontext");
+    if (!d3dcontext)
+        return VLC_EGENERIC;
+#endif
+
+    vout_display_sys_t *sys = vd->sys = calloc(1, sizeof(vout_display_sys_t));
+    if (!sys)
+        return VLC_ENOMEM;
+
+#if !VLC_WINSTORE_APP
+    sys->hd3d11_dll       = hd3d11_dll;
+    sys->hd3dcompiler_dll = hd3dcompiler_dll;
+
+    sys->OurD3DCompile = (void *)GetProcAddress(sys->hd3dcompiler_dll, "D3DCompile");
+    if (!sys->OurD3DCompile) {
+        msg_Err(vd, "Cannot locate reference to D3DCompile in d3dcompiler DLL");
         Direct3D11Destroy(vd);
         return VLC_EGENERIC;
     }
 
+# if USE_DXGI
+    sys->hdxgi_dll = hdxgi_dll;
+
+    /* TODO : enable all dxgi versions from 1.3 -> 1.1 */
+    PFN_CREATE_DXGI_FACTORY OurCreateDXGIFactory =
+        (void *)GetProcAddress(sys->hdxgi_dll, "CreateDXGIFactory");
+    if (!OurCreateDXGIFactory) {
+        msg_Err(vd, "Cannot locate reference to CreateDXGIFactory in dxgi DLL");
+        Direct3D11Destroy(vd);
+        return VLC_EGENERIC;
+    }
+
+    /* TODO : detect the directx version supported and use IID_IDXGIFactory3 or 2 */
+    HRESULT hr = OurCreateDXGIFactory(&IID_IDXGIFactory, (void **)&sys->dxgifactory);
+    if (FAILED(hr)) {
+        msg_Err(vd, "Could not create dxgi factory. (hr=0x%lX)", hr);
+        Direct3D11Destroy(vd);
+        return VLC_EGENERIC;
+    }
+
+    sys->OurD3D11CreateDeviceAndSwapChain =
+        (void *)GetProcAddress(sys->hd3d11_dll, "D3D11CreateDeviceAndSwapChain");
+    if (!sys->OurD3D11CreateDeviceAndSwapChain) {
+        msg_Err(vd, "Cannot locate reference to D3D11CreateDeviceAndSwapChain in d3d11 DLL");
+        Direct3D11Destroy(vd);
+        return VLC_EGENERIC;
+    }
+
+# else
+    sys->OurD3D11CreateDevice =
+        (void *)GetProcAddress(sys->hd3d11_dll, "D3D11CreateDevice");
+    if (!sys->OurD3D11CreateDevice) {
+        msg_Err(vd, "Cannot locate reference to D3D11CreateDevice in d3d11 DLL");
+        Direct3D11Destroy(vd);
+        return VLC_EGENERIC;
+    }
+# endif
+
+#else
+    sys->dxgiswapChain = dxgiswapChain;
+    sys->d3ddevice     = d3ddevice;
+    sys->d3dcontext    = d3dcontext;
+#endif
+
     if (CommonInit(vd))
         goto error;
-
-    /* TODO : A fallback system */
-    vd->sys->d3dFormat = d3d_formats[0].format;
-    vd->sys->vlcFormat = d3d_formats[0].fourcc;
 
     video_format_t fmt;
     if (Direct3D11Open(vd, &fmt)) {
@@ -258,7 +470,7 @@ static void Prepare(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
     ID3D11DeviceContext_PSSetShader(sys->d3dcontext, sys->d3dpixelShader, NULL, 0);
     ID3D11DeviceContext_PSSetShaderResources(sys->d3dcontext, 0, 1, &sys->d3dresViewY);
 
-    if (sys->vlcFormat == VLC_CODEC_NV12)
+    if( sys->d3dFormatUV )
         ID3D11DeviceContext_PSSetShaderResources(sys->d3dcontext, 1, 1, &sys->d3dresViewUV);
 
     ID3D11DeviceContext_PSSetSamplers(sys->d3dcontext, 0, 1, &sys->d3dsampState);
@@ -278,124 +490,6 @@ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpic
     CommonDisplay(vd);
 }
 
-#if !VLC_WINSTORE_APP
-static HINSTANCE Direct3D11LoadShaderLibrary(void)
-{
-    HINSTANCE instance = NULL;
-    /* d3dcompiler_47 is the latest on windows 8.1 */
-    for (int i = 47; i > 41; --i) {
-        TCHAR filename[18];
-        _sntprintf(filename, 18, TEXT("D3DCOMPILER_%d.dll"), i);
-        instance = LoadLibrary(filename);
-        if (instance) break;
-    }
-    return instance;
-}
-#endif
-
-static int Direct3D11Create(vout_display_t *vd)
-{
-
-#if !VLC_WINSTORE_APP
-
-    HINSTANCE hd3d11_dll = LoadLibrary(TEXT("D3D11.DLL"));
-    if (!hd3d11_dll) {
-        msg_Warn(vd, "cannot load d3d11.dll, aborting");
-        return VLC_EGENERIC;
-    }
-
-# if 0
-    HINSTANCE hdxgi_dll = LoadLibrary(TEXT("DXGI.DLL"));
-    if (!hdxgi_dll) {
-        msg_Warn(vd, "cannot load dxgi.dll, aborting");
-        return VLC_EGENERIC;
-    }
-# endif
-
-    HINSTANCE hd3dcompiler_dll = Direct3D11LoadShaderLibrary();
-    if (!hd3dcompiler_dll) {
-        msg_Err(vd, "cannot load d3dcompiler.dll, aborting");
-        return VLC_EGENERIC;
-    }
-
-#else
-
-    IDXGISwapChain1* dxgiswapChain  = var_InheritInteger(vd, "winrt-dxgiswapchain");
-    if (!dxgiswapChain)
-        return VLC_EGENERIC;
-    ID3D11Device* d3ddevice         = var_InheritInteger(vd, "winrt-d3ddevice");
-    if (!d3ddevice)
-        return VLC_EGENERIC;
-    ID3D11DeviceContext* d3dcontext = var_InheritInteger(vd, "winrt-d3dcontext");
-    if (!d3dcontext)
-        return VLC_EGENERIC;
-
-#endif
-
-    vout_display_sys_t *sys = vd->sys = calloc(1, sizeof(vout_display_sys_t));
-    if (!sys)
-        return VLC_ENOMEM;
-
-#if !VLC_WINSTORE_APP
-
-    sys->hd3d11_dll       = hd3d11_dll;
-    sys->hd3dcompiler_dll = hd3dcompiler_dll;
-
-    sys->OurD3DCompile = (void *)GetProcAddress(sys->hd3dcompiler_dll, "D3DCompile");
-    if (!sys->OurD3DCompile) {
-        msg_Err(vd, "Cannot locate reference to D3DCompile in d3dcompiler DLL");
-        return VLC_EGENERIC;
-    }
-
-# if 0
-
-    sys->hdxgi_dll = hdxgi_dll;
-
-    /* TODO : enable all dxgi versions from 1.3 -> 1.1 */
-    PFN_CREATE_DXGI_FACTORY OurCreateDXGIFactory =
-        (void *)GetProcAddress(sys->hdxgi_dll, "CreateDXGIFactory");
-    if (!OurCreateDXGIFactory) {
-        msg_Err(vd, "Cannot locate reference to CreateDXGIFactory in dxgi DLL");
-        return VLC_EGENERIC;
-    }
-
-    /* TODO : detect the directx version supported and use IID_IDXGIFactory3 or 2 */
-    HRESULT hr = OurCreateDXGIFactory(&IID_IDXGIFactory, (void **)&sys->dxgifactory);
-    if (FAILED(hr)) {
-        msg_Err(vd, "Could not create dxgi factory. (hr=0x%lX)", hr);
-        return VLC_EGENERIC;
-    }
-
-    sys->OurD3D11CreateDeviceAndSwapChain =
-        (void *)GetProcAddress(sys->hd3d11_dll, "D3D11CreateDeviceAndSwapChain");
-    if (!sys->OurD3D11CreateDeviceAndSwapChain) {
-        msg_Err(vd, "Cannot locate reference to D3D11CreateDeviceAndSwapChain in d3d11 DLL");
-        return VLC_EGENERIC;
-    }
-
-# else
-
-    sys->OurD3D11CreateDevice =
-        (void *)GetProcAddress(sys->hd3d11_dll, "D3D11CreateDevice");
-    if (!sys->OurD3D11CreateDevice) {
-        msg_Err(vd, "Cannot locate reference to D3D11CreateDevice in d3d11 DLL");
-        return VLC_EGENERIC;
-    }
-
-# endif
-
-#else
-
-    sys->dxgiswapChain = dxgiswapChain;
-    sys->d3ddevice     = d3ddevice;
-    sys->d3dcontext    = d3dcontext;
-
-#endif
-
-    return VLC_SUCCESS;
-}
-
-
 static void Direct3D11Destroy(vout_display_t *vd)
 {
 
@@ -403,7 +497,7 @@ static void Direct3D11Destroy(vout_display_t *vd)
 
     vout_display_sys_t *sys = vd->sys;
 
-# if 0
+# if USE_DXGI
     if (sys->hdxgi_dll)
         FreeLibrary(sys->hdxgi_dll);
 # endif
@@ -426,8 +520,23 @@ static void Direct3D11Destroy(vout_display_t *vd)
     VLC_UNUSED(vd);
 
 #endif
-
 }
+
+#if !VLC_WINSTORE_APP
+static HINSTANCE Direct3D11LoadShaderLibrary(void)
+{
+    HINSTANCE instance = NULL;
+    /* d3dcompiler_47 is the latest on windows 8.1 */
+    for (int i = 47; i > 41; --i) {
+        TCHAR filename[19];
+        _sntprintf(filename, 19, TEXT("D3DCOMPILER_%d.dll"), i);
+        instance = LoadLibrary(filename);
+        if (instance) break;
+    }
+    return instance;
+}
+#endif
+
 
 static int Direct3D11Open(vout_display_t *vd, video_format_t *fmt)
 {
@@ -450,7 +559,7 @@ static int Direct3D11Open(vout_display_t *vd, video_format_t *fmt)
         D3D_FEATURE_LEVEL_9_1
     };
 
-# ifndef NDEBUG
+# if !defined(NDEBUG) && defined(_MSC_VER)
     creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
 # endif
 
@@ -477,7 +586,7 @@ static int Direct3D11Open(vout_display_t *vd, video_format_t *fmt)
     scd.OutputWindow = sys->hvideownd;
 # endif
 
-# if 0
+# if USE_DXGI
 
     /* TODO : list adapters for the user to choose from */
     hr = IDXGIFactory_EnumAdapters(sys->dxgifactory, 0, &sys->dxgiadapter);
@@ -586,6 +695,76 @@ static int Direct3D11Open(vout_display_t *vd, video_format_t *fmt)
 # endif
 #endif
 
+    // look for the request pixel format first
+    for (unsigned i = 0; d3d_formats[i].name != 0; i++)
+    {
+        if( fmt->i_chroma == d3d_formats[i].fourcc)
+        {
+            UINT i_formatSupport;
+            if( SUCCEEDED( ID3D11Device_CheckFormatSupport(sys->d3ddevice,
+                                                           d3d_formats[i].formatTexture,
+                                                           &i_formatSupport)) &&
+                    ( i_formatSupport & D3D11_FORMAT_SUPPORT_TEXTURE2D ))
+            {
+                msg_Dbg(vd, "Using pixel format %s", d3d_formats[i].name );
+                sys->d3dFormatTex = d3d_formats[i].formatTexture;
+                sys->vlcFormat    = d3d_formats[i].fourcc;
+                sys->d3dFormatY   = d3d_formats[i].formatY;
+                sys->d3dFormatUV  = d3d_formats[i].formatUV;
+                break;
+            }
+        }
+    }
+
+    // look for any pixel format that we can handle
+    if ( !sys->vlcFormat )
+    {
+        for (unsigned i = 0; d3d_formats[i].name != 0; i++)
+        {
+            UINT i_formatSupport;
+            if( SUCCEEDED( ID3D11Device_CheckFormatSupport(sys->d3ddevice,
+                                                           d3d_formats[i].formatTexture,
+                                                           &i_formatSupport)) &&
+                    ( i_formatSupport & D3D11_FORMAT_SUPPORT_TEXTURE2D ))
+            {
+                msg_Dbg(vd, "Using pixel format %s", d3d_formats[i].name );
+                sys->d3dFormatTex = d3d_formats[i].formatTexture;
+                sys->vlcFormat    = d3d_formats[i].fourcc;
+                sys->d3dFormatY   = d3d_formats[i].formatY;
+                sys->d3dFormatUV  = d3d_formats[i].formatUV;
+                break;
+            }
+        }
+    }
+    if ( !sys->vlcFormat )
+    {
+       msg_Err(vd, "Could not get a suitable texture pixel format");
+       return VLC_EGENERIC;
+    }
+
+    switch (sys->vlcFormat)
+    {
+    case VLC_CODEC_NV12:
+        if( fmt->i_height > 576 )
+            sys->d3dPxShader = globPixelShaderBiplanarYUV_BT709_2RGB;
+        else
+            sys->d3dPxShader = globPixelShaderBiplanarYUV_BT601_2RGB;
+        break;
+    case VLC_CODEC_YV12:
+    case VLC_CODEC_I420:
+        if( fmt->i_height > 576 )
+            sys->d3dPxShader = globPixelShaderBiplanarI420_BT709_2RGB;
+        else
+            sys->d3dPxShader = globPixelShaderBiplanarI420_BT601_2RGB;
+        break;
+    case VLC_CODEC_RGB32:
+    case VLC_CODEC_BGRA:
+    case VLC_CODEC_RGB16:
+    default:
+        sys->d3dPxShader = globPixelShaderDefault;
+        break;
+    }
+
     UpdateRects(vd, NULL, NULL, true);
 
     if (Direct3D11CreateResources(vd, fmt)) {
@@ -605,8 +784,10 @@ static void Direct3D11Close(vout_display_t *vd)
     vout_display_sys_t *sys = vd->sys;
 
     Direct3D11DestroyResources(vd);
-    ID3D11DeviceContext_Release(sys->d3dcontext);
-    ID3D11Device_Release(sys->d3ddevice);
+    if ( sys->d3dcontext )
+        ID3D11DeviceContext_Release(sys->d3dcontext);
+    if ( sys->d3ddevice )
+        ID3D11Device_Release(sys->d3ddevice);
     msg_Dbg(vd, "Direct3D11 device adapter closed");
 }
 
@@ -726,16 +907,12 @@ static int Direct3D11CreateResources(vout_display_t *vd, video_format_t *fmt)
     ID3DBlob* pPSBlob = NULL;
 
     /* TODO : Match the version to the D3D_FEATURE_LEVEL */
-    if (sys->vlcFormat == VLC_CODEC_NV12)
-        hr = D3DCompile(globPixelShaderBiplanarYUV2RGB, strlen(globPixelShaderBiplanarYUV2RGB),
-                        NULL, NULL, NULL, "PS", "ps_4_0_level_9_1", 0, 0, &pPSBlob, NULL);
-    else
-        hr = D3DCompile(globPixelShaderDefault, strlen(globPixelShaderDefault),
-                        NULL, NULL, NULL, "PS", "ps_4_0_level_9_1", 0, 0, &pPSBlob, NULL);
+    hr = D3DCompile(sys->d3dPxShader, strlen(sys->d3dPxShader),
+                    NULL, NULL, NULL, "PS", "ps_4_0_level_9_1", 0, 0, &pPSBlob, NULL);
 
 
     if( FAILED(hr)) {
-      msg_Err(vd, "The Pixel Shader is invalid.");
+      msg_Err(vd, "The Pixel Shader is invalid. (hr=0x%lX)", hr );
       return VLC_EGENERIC;
     }
 
@@ -810,7 +987,7 @@ static int Direct3D11CreateResources(vout_display_t *vd, video_format_t *fmt)
     texDesc.Width = fmt->i_visible_width;
     texDesc.Height = fmt->i_visible_height;
     texDesc.MipLevels = texDesc.ArraySize = 1;
-    texDesc.Format = sys->d3dFormat;
+    texDesc.Format = sys->d3dFormatTex;
     texDesc.SampleDesc.Count = 1;
     texDesc.Usage = D3D11_USAGE_DYNAMIC;
     texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -825,26 +1002,24 @@ static int Direct3D11CreateResources(vout_display_t *vd, video_format_t *fmt)
 
     D3D11_SHADER_RESOURCE_VIEW_DESC resviewDesc;
     memset(&resviewDesc, 0, sizeof(resviewDesc));
-    resviewDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    resviewDesc.Format = sys->d3dFormatY;
     resviewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     resviewDesc.Texture2D.MipLevels = texDesc.MipLevels;
-
-    if (sys->vlcFormat == VLC_CODEC_NV12)
-        resviewDesc.Format = DXGI_FORMAT_R8_UNORM;
 
     hr = ID3D11Device_CreateShaderResourceView(sys->d3ddevice, (ID3D11Resource *)sys->d3dtexture, &resviewDesc, &sys->d3dresViewY);
     if (FAILED(hr)) {
         if(sys->d3dtexture) ID3D11Texture2D_Release(sys->d3dtexture);
-        msg_Err(vd, "Could not Create the Y D3d11 Texture ResoureView. (hr=0x%lX)", hr);
+        msg_Err(vd, "Could not Create the Y D3d11 Texture ResourceView. (hr=0x%lX)", hr);
         return VLC_EGENERIC;
     }
 
-    if (sys->vlcFormat == VLC_CODEC_NV12) {
-        resviewDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    if( sys->d3dFormatUV )
+    {
+        resviewDesc.Format = sys->d3dFormatUV;
         hr = ID3D11Device_CreateShaderResourceView(sys->d3ddevice, (ID3D11Resource *)sys->d3dtexture, &resviewDesc, &sys->d3dresViewUV);
         if (FAILED(hr)) {
             if(sys->d3dtexture) ID3D11Texture2D_Release(sys->d3dtexture);
-            msg_Err(vd, "Could not Create the U D3d11 Texture ResoureView. (hr=0x%lX)", hr);
+            msg_Err(vd, "Could not Create the UV D3d11 Texture ResourceView. (hr=0x%lX)", hr);
             return VLC_EGENERIC;
         }
     }
@@ -875,6 +1050,7 @@ static int Direct3D11CreateResources(vout_display_t *vd, video_format_t *fmt)
 
     picsys->texture  = sys->d3dtexture;
     picsys->context  = sys->d3dcontext;
+    picsys->vd       = vd;
 
     picture_resource_t resource = { .p_sys = picsys };
     for (int i = 0; i < PICTURE_PLANE_MAX; i++)
@@ -923,8 +1099,15 @@ static void Direct3D11DestroyResources(vout_display_t *vd)
 static int Direct3D11MapTexture(picture_t *picture)
 {
     D3D11_MAPPED_SUBRESOURCE mappedResource;
-    ID3D11DeviceContext_Map(picture->p_sys->context, (ID3D11Resource *)picture->p_sys->texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-    CommonUpdatePicture(picture, NULL, mappedResource.pData, mappedResource.RowPitch);
+    HRESULT hr;
+    int res;
+    hr = ID3D11DeviceContext_Map(picture->p_sys->context, (ID3D11Resource *)picture->p_sys->texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
+    if( FAILED(hr) )
+    {
+        msg_Dbg( picture->p_sys->vd, "failed to map the texture (hr=0x%lX)", hr );
+        return VLC_EGENERIC;
+    }
+    res = CommonUpdatePicture(picture, NULL, mappedResource.pData, mappedResource.RowPitch);
     ID3D11DeviceContext_Unmap(picture->p_sys->context,(ID3D11Resource *)picture->p_sys->texture, 0);
-    return VLC_SUCCESS;
+    return res;
 }

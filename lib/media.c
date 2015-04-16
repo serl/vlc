@@ -426,6 +426,26 @@ libvlc_media_t *libvlc_media_new_fd( libvlc_instance_t *p_instance, int fd )
     return libvlc_media_new_location( p_instance, mrl );
 }
 
+libvlc_media_t *libvlc_media_new_callbacks(libvlc_instance_t *p_instance,
+                                           libvlc_media_open_cb open_cb,
+                                           libvlc_media_read_cb read_cb,
+                                           libvlc_media_seek_cb seek_cb,
+                                           libvlc_media_close_cb close_cb,
+                                           void *opaque)
+{
+    libvlc_media_t *m = libvlc_media_new_location(p_instance, "imem://");
+    if (unlikely(m == NULL))
+        return NULL;
+
+    assert(read_cb != NULL);
+    input_item_AddOpaque(m->p_input_item, "imem-data", opaque);
+    input_item_AddOpaque(m->p_input_item, "imem-open", open_cb);
+    input_item_AddOpaque(m->p_input_item, "imem-read", read_cb);
+    input_item_AddOpaque(m->p_input_item, "imem-seek", seek_cb);
+    input_item_AddOpaque(m->p_input_item, "imem-close", close_cb);
+    return m;
+}
+
 /**************************************************************************
  * Create a new media descriptor object
  **************************************************************************/
@@ -998,4 +1018,36 @@ void libvlc_media_tracks_release( libvlc_media_track_t **p_tracks, unsigned i_co
         free( p_tracks[i] );
     }
     free( p_tracks );
+}
+
+/**************************************************************************
+ * Get the media type of the media descriptor object
+ **************************************************************************/
+libvlc_media_type_t libvlc_media_get_type( libvlc_media_t *p_md )
+{
+    assert( p_md );
+
+    int i_type;
+    input_item_t *p_input_item = p_md->p_input_item;
+
+    vlc_mutex_lock( &p_input_item->lock );
+    i_type = p_md->p_input_item->i_type;
+    vlc_mutex_unlock( &p_input_item->lock );
+
+    switch( i_type )
+    {
+    case ITEM_TYPE_FILE:
+        return libvlc_media_type_file;
+    case ITEM_TYPE_NODE:
+    case ITEM_TYPE_DIRECTORY:
+        return libvlc_media_type_directory;
+    case ITEM_TYPE_DISC:
+        return libvlc_media_type_disc;
+    case ITEM_TYPE_STREAM:
+        return libvlc_media_type_stream;
+    case ITEM_TYPE_PLAYLIST:
+        return libvlc_media_type_playlist;
+    default:
+        return libvlc_media_type_unknown;
+    }
 }

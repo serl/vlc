@@ -53,6 +53,7 @@
 #include "dbus_tracklist.h"
 #include "dbus_introspect.h"
 
+#define VLC_MODULE_LICENSE VLC_LICENSE_GPL_2_PLUS
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_interface.h>
@@ -236,7 +237,7 @@ static int Open( vlc_object_t *p_this )
     p_playlist = pl_Get( p_intf );
     p_sys->p_playlist = p_playlist;
 
-    var_AddCallback( p_playlist, "activity", AllCallback, p_intf );
+    var_AddCallback( p_playlist, "input-current", AllCallback, p_intf );
     var_AddCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_AddCallback( p_playlist, "volume", AllCallback, p_intf );
     var_AddCallback( p_playlist, "mute", AllCallback, p_intf );
@@ -298,7 +299,7 @@ static void Close   ( vlc_object_t *p_this )
     vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
 
-    var_DelCallback( p_playlist, "activity", AllCallback, p_intf );
+    var_DelCallback( p_playlist, "input-current", AllCallback, p_intf );
     var_DelCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_DelCallback( p_playlist, "volume", AllCallback, p_intf );
     var_DelCallback( p_playlist, "mute", AllCallback, p_intf );
@@ -981,7 +982,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
     callback_info_t info = { .signal = SIGNAL_NONE };
 
     // Wich event is it ?
-    if( !strcmp( "activity", psz_var ) )
+    if( !strcmp( "input-current", psz_var ) )
         info.signal = SIGNAL_ITEM_CURRENT;
     else if( !strcmp( "volume", psz_var ) )
     {
@@ -1036,7 +1037,7 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
 }
 
 /*****************************************************************************
- * TrackChange: callback on playlist "activity"
+ * TrackChange: callback on playlist "input-current"
  *****************************************************************************/
 static int TrackChange( intf_thread_t *p_intf )
 {

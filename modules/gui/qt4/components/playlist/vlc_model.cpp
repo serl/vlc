@@ -55,9 +55,8 @@ VLCModel::VLCModel( intf_thread_t *_p_intf, QObject *parent )
     ADD_ICON( FILE, ":/type/file" );
     ADD_ICON( DIRECTORY, ":/type/directory" );
     ADD_ICON( DISC, ":/type/disc" );
-    ADD_ICON( CDDA, ":/type/cdda" );
     ADD_ICON( CARD, ":/type/capture-card" );
-    ADD_ICON( NET, ":/type/net" );
+    ADD_ICON( STREAM, ":/type/stream" );
     ADD_ICON( PLAYLIST, ":/type/playlist" );
     ADD_ICON( NODE, ":/type/node" );
 #undef ADD_ICON

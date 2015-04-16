@@ -205,6 +205,7 @@ modules/access/gnomevfs.c
 modules/access/http.c
 modules/access/idummy.c
 modules/access/imem.c
+modules/access/imem-access.c
 modules/access/jack.c
 modules/access/linsys/linsys_hdsdi.c
 modules/access/linsys/linsys_sdi.c
@@ -221,8 +222,6 @@ modules/access/mms/mmstu.c
 modules/access/mms/mmstu.h
 modules/access/mtp.c
 modules/access/oss.c
-modules/access_output/bonjour.c
-modules/access_output/bonjour.h
 modules/access_output/dummy.c
 modules/access_output/file.c
 modules/access_output/http.c
@@ -278,6 +277,7 @@ modules/access/vcdx/vcdplayer.c
 modules/access/vcdx/vcdplayer.h
 modules/access/vdr.c
 modules/access/vnc.c
+modules/access/wasapi.c
 modules/access/zip/zipstream.c
 modules/arm_neon/chroma_yuv.c
 modules/arm_neon/simple_channel_mixer.c
@@ -438,7 +438,7 @@ modules/control/lirc.c
 modules/control/motion.c
 modules/control/netsync.c
 modules/control/ntservice.c
-modules/control/rc.c
+modules/control/oldrc.c
 modules/control/unimotion.c
 modules/control/unimotion.h
 modules/demux/aiff.c
@@ -491,6 +491,9 @@ modules/demux/mpeg/es.c
 modules/demux/mpeg/h264.c
 modules/demux/mpeg/hevc.c
 modules/demux/mpeg/mpgv.c
+modules/demux/mpeg/ps.c
+modules/demux/mpeg/ps.h
+modules/demux/mpeg/ts.c
 modules/demux/nsc.c
 modules/demux/nsv.c
 modules/demux/nuv.c
@@ -511,8 +514,6 @@ modules/demux/playlist/qtl.c
 modules/demux/playlist/sgimb.c
 modules/demux/playlist/shoutcast.c
 modules/demux/playlist/xspf.c
-modules/demux/ps.c
-modules/demux/ps.h
 modules/demux/pva.c
 modules/demux/rawaud.c
 modules/demux/rawdv.c
@@ -522,7 +523,6 @@ modules/demux/sid.cpp
 modules/demux/smf.c
 modules/demux/stl.c
 modules/demux/subtitle.c
-modules/demux/ts.c
 modules/demux/tta.c
 modules/demux/ty.c
 modules/demux/vc1.c

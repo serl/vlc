@@ -36,9 +36,8 @@
 
 #include <string.h>
 
-/*****************************************************************************
- * input_item_t: Describes an input and is used to spawn input_thread_t objects
- *****************************************************************************/
+typedef struct input_item_opaque input_item_opaque_t;
+
 struct info_t
 {
     char *psz_name;            /**< Name of this info */
@@ -52,6 +51,9 @@ struct info_category_t
     struct info_t **pp_infos;     /**< Pointer to an array of infos */
 };
 
+/**
+ * Describes an input and is used to spawn input_thread_t objects.
+ */
 struct input_item_t
 {
     int        i_id;                 /**< Identifier of the item */
@@ -63,6 +65,7 @@ struct input_item_t
     char       **ppsz_options;       /**< Array of input options */
     uint8_t    *optflagv;            /**< Some flags of input options */
     unsigned   optflagc;
+    input_item_opaque_t *opaques;    /**< List of opaque pointer values */
 
     mtime_t    i_duration;           /**< Duration in microseconds */
 
@@ -85,7 +88,12 @@ struct input_item_t
     vlc_mutex_t lock;                 /**< Lock for the item */
 
     uint8_t     i_type;              /**< Type (file, disc, ... see input_item_type_e) */
+    bool        b_net;               /**< Net: always true for TYPE_STREAM, it
+                                          depends for others types */
     bool        b_error_when_reading;/**< Error When Reading */
+
+    int         i_preparse_depth;    /**< How many level of sub items can be preparsed:
+                                          -1: recursive, 0: none, >0: n levels */
 };
 
 TYPEDEF_ARRAY(input_item_t*, input_item_array_t)
@@ -96,9 +104,8 @@ enum input_item_type_e
     ITEM_TYPE_FILE,
     ITEM_TYPE_DIRECTORY,
     ITEM_TYPE_DISC,
-    ITEM_TYPE_CDDA,
     ITEM_TYPE_CARD,
-    ITEM_TYPE_NET,
+    ITEM_TYPE_STREAM,
     ITEM_TYPE_PLAYLIST,
     ITEM_TYPE_NODE,
 
@@ -183,6 +190,9 @@ enum input_item_option_e
  * This function allows to add an option to an existing input_item_t.
  */
 VLC_API int input_item_AddOption(input_item_t *, const char *, unsigned i_flags );
+VLC_API int input_item_AddOpaque(input_item_t *, const char *, void *);
+
+void input_item_ApplyOptions(vlc_object_t *, input_item_t *);
 
 /* */
 VLC_API bool input_item_HasErrorWhenReading( input_item_t * );
@@ -254,6 +264,16 @@ VLC_API void input_item_MergeInfos( input_item_t *, info_category_t * );
  * less arguments.
  */
 VLC_API input_item_t * input_item_NewWithType( const char *psz_uri, const char *psz_name, int i_options, const char *const *ppsz_options, unsigned i_option_flags, mtime_t i_duration, int i_type ) VLC_USED;
+
+/**
+ * This function creates a new input_item_t with the provided information.
+ *
+ * \param i_net 1/0: force b_net to true/false, -1: default (guess it)
+ *
+ * XXX You may also use input_item_New, input_item_NewExt, or
+ * input_item_NewWithType as they need less arguments.
+ */
+VLC_API input_item_t * input_item_NewWithTypeExt( const char *psz_uri, const char *psz_name, int i_options, const char *const *ppsz_options, unsigned i_option_flags, mtime_t i_duration, int i_type, int i_net ) VLC_USED;
 
 /**
  * This function creates a new input_item_t with the provided information.

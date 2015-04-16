@@ -786,7 +786,7 @@ static const char *const ppsz_prefres[] = {
 
 #define TIMEOUT_TEXT N_("TCP connection timeout")
 #define TIMEOUT_LONGTEXT N_( \
-    "Default TCP connection timeout (in milliseconds). " )
+    "Default TCP connection timeout (in milliseconds)." )
 
 #define HTTP_HOST_TEXT N_( "HTTP server address" )
 #define HOST_LONGTEXT N_( \
@@ -1091,6 +1091,17 @@ static const char *const ppsz_prefres[] = {
     "Automatically preparse files added to the playlist " \
     "(to retrieve some metadata)." )
 
+#define RECURSIVE_TEXT N_("Subdirectory behavior")
+#define RECURSIVE_LONGTEXT N_( \
+        "Select whether subdirectories must be expanded.\n" \
+        "none: subdirectories do not appear in the playlist.\n" \
+        "collapse: subdirectories appear but are expanded on first play.\n" \
+        "expand: all subdirectories are expanded.\n" )
+
+static const char *const psz_recursive_list[] = { "none", "collapse", "expand" };
+static const char *const psz_recursive_list_text[] = {
+    N_("None"), N_("Collapse"), N_("Expand"), N_("Expand distant files") };
+
 #define METADATA_NETWORK_TEXT N_( "Allow metadata network access" )
 
 #define SD_TEXT N_( "Services discovery modules")
@@ -1121,6 +1132,10 @@ static const char *const ppsz_prefres[] = {
 #define PAP_TEXT N_("Play and pause")
 #define PAP_LONGTEXT N_( \
     "Pause each item in the playlist on the last frame." )
+
+#define SP_TEXT N_("Start paused")
+#define SP_LONGTEXT N_( \
+    "Pause each item in the playlist on the first frame." )
 
 #define AUTOSTART_TEXT N_( "Auto start" )
 #define AUTOSTART_LONGTEXT N_( "Automatically start playing the playlist " \
@@ -1671,6 +1686,7 @@ vlc_module_begin ()
     set_section( N_( "Playback control" ) , NULL)
     add_integer( "input-repeat", 0,
                  INPUT_REPEAT_TEXT, INPUT_REPEAT_LONGTEXT, false )
+        change_integer_range( 0, 65535 )
         change_safe ()
     add_float( "start-time", 0,
                START_TIME_TEXT, START_TIME_LONGTEXT, true )
@@ -1983,6 +1999,7 @@ vlc_module_begin ()
         change_safe()
     add_bool( "play-and-pause", 0, PAP_TEXT, PAP_LONGTEXT, true )
         change_safe()
+    add_bool( "start-paused", 0, SP_TEXT, SP_LONGTEXT, false )
     add_bool( "playlist-autostart", true,
               AUTOSTART_TEXT, AUTOSTART_LONGTEXT, false )
     add_bool( "playlist-cork", true, CORK_TEXT, CORK_LONGTEXT, false )
@@ -2005,6 +2022,10 @@ vlc_module_begin ()
 
     add_bool( "auto-preparse", true, PREPARSE_TEXT,
               PREPARSE_LONGTEXT, false )
+
+    add_string( "recursive", "collapse" , RECURSIVE_TEXT,
+                RECURSIVE_LONGTEXT, false )
+      change_string_list( psz_recursive_list, psz_recursive_list_text )
 
     add_obsolete_integer( "album-art" )
     add_bool( "metadata-network-access", false, METADATA_NETWORK_TEXT,

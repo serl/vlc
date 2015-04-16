@@ -221,8 +221,6 @@ static bool PlayItem( playlist_t *p_playlist, playlist_item_t *p_item )
         }
     }
 
-    var_SetAddress( p_playlist, "input-current", p_input_thread );
-
     /* TODO store art policy in playlist private data */
     char *psz_arturl = input_item_GetArtURL( p_input );
     /* p_input->p_meta should not be null after a successful CreateThread */
@@ -239,7 +237,7 @@ static bool PlayItem( playlist_t *p_playlist, playlist_item_t *p_item )
     p_sys->p_input = p_input_thread;
     PL_UNLOCK;
 
-    var_TriggerCallback( p_playlist, "activity" );
+    var_SetAddress( p_playlist, "input-current", p_input_thread );
 
     PL_LOCK;
     return p_input_thread != NULL;
@@ -461,7 +459,6 @@ static void LoopInput( playlist_t *p_playlist )
         var_DelCallback( p_input, "intf-event", InputEvent, p_playlist );
 
         input_Close( p_input );
-        var_TriggerCallback( p_playlist, "activity" );
         PL_LOCK;
         return;
     }

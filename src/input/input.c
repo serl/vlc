@@ -72,6 +72,7 @@ static inline int ControlPop( input_thread_t *, int *, vlc_value_t *, mtime_t i_
 static void       ControlRelease( int i_type, vlc_value_t val );
 static bool       ControlIsSeekRequest( int i_type );
 static bool       Control( input_thread_t *, int, vlc_value_t );
+static void       ControlPause( input_thread_t *, mtime_t );
 
 static int  UpdateTitleSeekpointFromDemux( input_thread_t * );
 static void UpdateGenericFromDemux( input_thread_t * );
@@ -197,7 +198,8 @@ int input_Preparse( vlc_object_t *p_parent, input_item_t *p_item )
          * demux_Demux in order to fetch sub items */
         bool b_is_playlist = false;
 
-        if ( demux_Control( p_input->p->input.p_demux,
+        if ( input_item_ShouldPreparseSubItems( p_item )
+          && demux_Control( p_input->p->input.p_demux,
                             DEMUX_IS_PLAYLIST,
                             &b_is_playlist ) )
             b_is_playlist = false;
@@ -316,12 +318,7 @@ static input_thread_t *Create( vlc_object_t *p_parent, input_item_t *p_item,
     }
 
     /* Parse input options */
-    vlc_mutex_lock( &p_item->lock );
-    assert( (int)p_item->optflagc == p_item->i_options );
-    for( i = 0; i < p_item->i_options; i++ )
-        var_OptionParse( VLC_OBJECT(p_input), p_item->ppsz_options[i],
-                         !!(p_item->optflagv[i] & VLC_INPUT_OPTION_TRUSTED) );
-    vlc_mutex_unlock( &p_item->lock );
+    input_item_ApplyOptions( VLC_OBJECT(p_input), p_item );
 
     p_input->b_preparsing = b_quick;
     p_input->psz_header = psz_header ? strdup( psz_header ) : NULL;
@@ -364,6 +361,26 @@ static input_thread_t *Create( vlc_object_t *p_parent, input_item_t *p_item,
 
     if( !p_item->p_stats )
         p_item->p_stats = stats_NewInputStats( p_input );
+
+    /* setup the preparse depth of the item
+     * if we are preparsing, use the i_preparse_depth of the parent item */
+    if( !p_input->b_preparsing )
+    {
+        char *psz_rec = var_InheritString( p_parent, "recursive" );
+
+        if( psz_rec != NULL )
+        {
+            if ( !strcasecmp( psz_rec, "none" ) )
+                p_item->i_preparse_depth = 0;
+            else if ( !strcasecmp( psz_rec, "collapse" ) )
+                p_item->i_preparse_depth = 1;
+            else
+                p_item->i_preparse_depth = -1; /* default is expand */
+            free (psz_rec);
+        } else
+            p_item->i_preparse_depth = -1;
+    }
+
     vlc_mutex_unlock( &p_item->lock );
 
     /* No slave */
@@ -518,6 +535,12 @@ static void *Run( void *obj )
 
     if( !Init( p_input ) )
     {
+        if( var_InheritBool( p_input, "start-paused" ) )
+        {
+            const mtime_t i_control_date = mdate();
+            ControlPause( p_input, i_control_date );
+        }
+
         MainLoop( p_input, true ); /* FIXME it can be wrong (like with VLM) */
 
         /* Clean up */
@@ -586,7 +609,7 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed, mtime_t i_
 static int MainLoopTryRepeat( input_thread_t *p_input, mtime_t *pi_start_mdate )
 {
     int i_repeat = var_GetInteger( p_input, "input-repeat" );
-    if( i_repeat == 0 )
+    if( i_repeat <= 0 )
         return VLC_EGENERIC;
 
     vlc_value_t val;
@@ -1703,27 +1726,24 @@ static bool Control( input_thread_t *p_input,
         }
 
         case INPUT_CONTROL_SET_STATE:
-            if( val.i_int != PLAYING_S && val.i_int != PAUSE_S )
-                msg_Err( p_input, "invalid state in INPUT_CONTROL_SET_STATE" );
-            else if( p_input->p->i_state == PAUSE_S )
+            switch( val.i_int )
             {
-                ControlUnpause( p_input, i_control_date );
-
-                b_force_update = true;
-            }
-            else if( val.i_int == PAUSE_S && p_input->p->i_state == PLAYING_S /* &&
-                     p_input->p->b_can_pause */ )
-            {
-                ControlPause( p_input, i_control_date );
-
-                b_force_update = true;
-            }
-            else if( val.i_int == PAUSE_S && !p_input->p->b_can_pause && 0 )
-            {
-                b_force_update = true;
-
-                /* Correct "state" value */
-                input_ChangeState( p_input, p_input->p->i_state );
+                case PLAYING_S:
+                    if( p_input->p->i_state == PAUSE_S )
+                    {
+                        ControlUnpause( p_input, i_control_date );
+                        b_force_update = true;
+                    }
+                    break;
+                case PAUSE_S:
+                    if( p_input->p->i_state == PLAYING_S )
+                    {
+                        ControlPause( p_input, i_control_date );
+                        b_force_update = true;
+                    }
+                    break;
+                default:
+                    msg_Err( p_input, "invalid INPUT_CONTROL_SET_STATE" );
             }
             break;
 

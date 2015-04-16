@@ -173,8 +173,11 @@ struct vout_display_sys_t
     ID3D11SamplerState       *d3dsampState;
     picture_sys_t            *picsys;
     D3D_FEATURE_LEVEL        d3dfeaturelevel;
-    DXGI_FORMAT              d3dFormat;
+    DXGI_FORMAT              d3dFormatTex;
+    DXGI_FORMAT              d3dFormatY;
+    DXGI_FORMAT              d3dFormatUV;
     vlc_fourcc_t             vlcFormat;
+    const char               *d3dPxShader;
 #endif
 
 #ifdef MODULE_NAME_IS_direct3d9

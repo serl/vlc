@@ -123,7 +123,7 @@ static int  Control( demux_t *, int, va_list );
 static int  Ogg_ReadPage     ( demux_t *, ogg_page * );
 static void Ogg_UpdatePCR    ( demux_t *, logical_stream_t *, ogg_packet * );
 static void Ogg_DecodePacket ( demux_t *, logical_stream_t *, ogg_packet * );
-static int  Ogg_OpusPacketDuration( ogg_packet * );
+static unsigned Ogg_OpusPacketDuration( ogg_packet * );
 static void Ogg_SendOrQueueBlocks( demux_t *, logical_stream_t *, block_t * );
 
 static void Ogg_CreateES( demux_t *p_demux );
@@ -304,6 +304,7 @@ static int Demux( demux_t * p_demux )
             }
             Ogg_EndOfStream( p_demux );
             p_sys->b_chained_boundary = true;
+            p_sys->i_nzpcr_offset = p_sys->i_nzlast_pts;
         }
 
         if( Ogg_BeginningOfStream( p_demux ) != VLC_SUCCESS )
@@ -399,8 +400,7 @@ static int Demux( demux_t * p_demux )
             {
                 msg_Err( p_demux, "Broken Ogg stream (serialno) mismatch" );
                 Ogg_ResetStream( p_stream );
-                p_sys->i_nzpcr_offset = (p_sys->i_pcr >= VLC_TS_INVALID) ?
-                                         p_sys->i_pcr - VLC_TS_0 : 0;
+                p_sys->i_nzpcr_offset = p_sys->i_nzlast_pts;
                 ogg_stream_reset_serialno( &p_stream->os, ogg_page_serialno( &p_sys->current_page ) );
             }
 
@@ -580,7 +580,9 @@ static int Demux( demux_t * p_demux )
                     if ( p_stream->fmt.i_cat == VIDEO_ES )
                     {
                         pagestamp = pagestamp - ( CLOCK_FREQ / p_stream->f_rate );
-                        p_block->i_pts = p_sys->i_nzpcr_offset + pagestamp;
+                        if( pagestamp < 0 )
+                            pagestamp = 0;
+                        p_block->i_pts = VLC_TS_0 + p_sys->i_nzpcr_offset + pagestamp;
                         b_fixed = true;
                     }
                 }
@@ -990,7 +992,7 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
 
             if( p_stream->fmt.i_codec == VLC_CODEC_OPUS && p_oggpacket->e_o_s )
             {
-                int duration = Ogg_OpusPacketDuration( p_oggpacket );
+                unsigned duration = Ogg_OpusPacketDuration( p_oggpacket );
                 if( duration > 0 )
                 {
                     ogg_int64_t end_sample = p_oggpacket->granulepos;
@@ -1011,7 +1013,7 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
     }
     else if ( p_oggpacket->granulepos == -1 )
     {
-        int i_duration;
+        unsigned i_duration;
         /* no granulepos available, try to interpolate the pcr.
          * If we can't then don't touch the old value. */
         if( p_stream->fmt.i_cat == VIDEO_ES && p_stream->i_pcr > VLC_TS_INVALID )
@@ -1106,8 +1108,19 @@ static void Ogg_SendOrQueueBlocks( demux_t *p_demux, logical_stream_t *p_stream,
                 temp = temp->p_next;
                 tosend->p_next = NULL;
 
-                DemuxDebug( msg_Dbg( p_demux, "block sent from preparse > pts %"PRId64" spcr %"PRId64" pcr %"PRId64,
-                         tosend->i_pts, p_stream->i_pcr, p_ogg->i_pcr ); )
+                if( tosend->i_pts < VLC_TS_0 )
+                {
+                    /* Don't send metadata from chained streams */
+                    block_Release( tosend );
+                    continue;
+                }
+                else if( tosend->i_dts < VLC_TS_0 )
+                {
+                    tosend->i_dts = tosend->i_pts;
+                }
+
+                DemuxDebug( msg_Dbg( p_demux, "block sent from preparse > dts %"PRId64" pts %"PRId64" spcr %"PRId64" pcr %"PRId64,
+                         tosend->i_dts, tosend->i_pts, p_stream->i_pcr, p_ogg->i_pcr ); )
                 es_out_Send( p_demux->out, p_stream->p_es, tosend );
 
                 if ( p_ogg->i_pcr < VLC_TS_0 && i_firstpts > VLC_TS_INVALID )
@@ -1121,6 +1134,7 @@ static void Ogg_SendOrQueueBlocks( demux_t *p_demux, logical_stream_t *p_stream,
 
         if ( p_block )
         {
+            p_ogg->i_nzlast_pts = (p_block->i_pts > VLC_TS_INVALID) ? p_block->i_pts - VLC_TS_0 : 0;
             DemuxDebug( msg_Dbg( p_demux, "block sent directly > pts %"PRId64" spcr %"PRId64" pcr %"PRId64,
                      p_block->i_pts, p_stream->i_pcr, p_ogg->i_pcr ) );
             es_out_Send( p_demux->out, p_stream->p_es, p_block );
@@ -1460,7 +1474,7 @@ static void Ogg_DecodePacket( demux_t *p_demux,
     Ogg_SendOrQueueBlocks( p_demux, p_stream, p_block );
 }
 
-static int Ogg_OpusPacketDuration( ogg_packet *p_oggpacket )
+static unsigned Ogg_OpusPacketDuration( ogg_packet *p_oggpacket )
 {
     return opus_frame_duration(p_oggpacket->packet, p_oggpacket->bytes);
 }
@@ -2051,8 +2065,8 @@ static void Ogg_CreateES( demux_t *p_demux )
                 p_stream->b_reinit = false;
                 p_stream->b_initializing = false;
                 p_stream->i_pre_skip = 0;
-                bool b_resetdecoder = Ogg_LogicalStreamResetEsFormat( p_demux, p_stream );
                 es_format_Copy( &p_stream->fmt_old, &p_old_stream->fmt );
+                bool b_resetdecoder = Ogg_LogicalStreamResetEsFormat( p_demux, p_stream );
 
                 p_old_stream->p_es = NULL;
                 p_old_stream = NULL;

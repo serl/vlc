@@ -145,6 +145,7 @@ void InputManager::setInput( input_thread_t *_p_input )
         // Save the latest URI to avoid asking to restore the
         // position on the same input file.
         lastURI = qfu( uri );
+        RecentsMRL::getInstance( p_intf )->addRecent( lastURI );
         free( uri );
     }
     else
@@ -1020,7 +1021,7 @@ MainInputManager::MainInputManager( intf_thread_t *_p_intf )
 
     /* Core Callbacks */
     var_AddCallback( THEPL, "item-change", ItemChanged, im );
-    var_AddCallback( THEPL, "activity", PLItemChanged, this );
+    var_AddCallback( THEPL, "input-current", PLItemChanged, this );
     var_AddCallback( THEPL, "leaf-to-parent", LeafToParent, this );
     var_AddCallback( THEPL, "playlist-item-append", PLItemAppended, this );
     var_AddCallback( THEPL, "playlist-item-deleted", PLItemRemoved, this );
@@ -1046,7 +1047,7 @@ MainInputManager::~MainInputManager()
        emit inputChanged( NULL );
     }
 
-    var_DelCallback( THEPL, "activity", PLItemChanged, this );
+    var_DelCallback( THEPL, "input-current", PLItemChanged, this );
     var_DelCallback( THEPL, "item-change", ItemChanged, im );
     var_DelCallback( THEPL, "leaf-to-parent", LeafToParent, this );
 

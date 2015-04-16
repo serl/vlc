@@ -90,6 +90,7 @@ libvlc_media_get_meta
 libvlc_media_get_mrl
 libvlc_media_get_state
 libvlc_media_get_stats
+libvlc_media_get_type
 libvlc_media_get_user_data
 libvlc_media_get_tracks_info
 libvlc_media_is_parsed
@@ -130,6 +131,7 @@ libvlc_media_list_remove_index
 libvlc_media_list_retain
 libvlc_media_list_set_media
 libvlc_media_list_unlock
+libvlc_media_new_callbacks
 libvlc_media_new_fd
 libvlc_media_new_location
 libvlc_media_new_path

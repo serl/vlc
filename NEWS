@@ -3,6 +3,7 @@ Changes between 2.2.x and 3.0.0-git:
 
 Core:
  * Support wayland surface type
+ * Allow to start the video paused on the first frame
 
 Access:
  * Support HDS (Http Dynamic Streaming) from Adobe (f4m, f4v, etc.)
@@ -18,6 +19,7 @@ Access:
  * Support depayloading Opus from RTP
  * Support sftp username and passwords options and URL
  * New UPnP access module, to list directories without infinite recursions
+ * New WASAPI audio capture module on Windows
 
 Decoder:
  * OMX GPU-zerocopy support for decoding and display on Android using OpenMax IL
@@ -32,6 +34,7 @@ Decoder:
  * Fixed uncompressed DVD-Audio (AOB) LPCM decoding
  * Rewrite WPL playlists and add ZPL playlists support (Zune)
  * Support TDSC, Canopus HQX
+ * Support HEVC hardware decoding on Windows, using DxVA2
 
 Demuxers:
  * Support HD-DVD .evo (H.264, VC-1, MPEG-2, PCM, AC-3, E-AC3, MLP, DTS)
@@ -46,6 +49,9 @@ Demuxers:
  * Fixed TS playback with PAT/PMT less recordings
  * Support for lame's replaygain extension in mpeg files
  * Fixes for DTS detection in WAV and MKV files
+ * Basic support for MPEG4-SL in TS and T-DMB
+ * Support for Creative ADPCM/alaw/ulaw/S16L in VOC files
+ * Support for Creative ADPCM in AVI
 
 Stream filter:
  * Added ARIB STD-B25 TS streams decoder
@@ -95,6 +101,7 @@ Skins2:
  * Support key accelerators
 
 libVLC:
+ * Add libvlc_media_new_callbacks for custom input byte streams
  * Add libvlc_audio_output_device_enum to enumerate devices of current aout
  * Split of libvlc_media_discoverer_new_from_name into libvlc_media_discoverer_new,
    libvlc_media_discoverer_new and libvlc_media_discoverer_start.
@@ -104,6 +111,7 @@ libVLC:
  * Add libvlc_media_parse_with_options that uses a flag to specify parse options
  * Add libvlc_audio_output_device_get to get the currently selected audio output device
    identifier (if there is one available)
+ * Add libvlc_media_get_type to get the type of the media
 
 Logging
  * Support for the SystemD Journal

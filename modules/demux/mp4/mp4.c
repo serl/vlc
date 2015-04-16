@@ -1541,7 +1541,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                     }
 
                     if ( asprintf( &psz_filename, "%s/covr/data[%"PRIu64"]", psz_roots[i_index - 1],
-                                   i_box_count - 1 ) >= 0 )
+                                   (uint64_t) i_box_count - 1 ) >= 0 )
                     {
                         (*ppp_attach)[i_count++] =
                             vlc_input_attachment_New( psz_filename, psz_mime, "Cover picture",
@@ -3006,7 +3006,23 @@ static int MP4_TrackSeek( demux_t *p_demux, mp4_track_t *p_track,
  * 3 types: for audio
  *
  */
-#define QT_V0_MAX_SAMPLES 1024
+static inline uint32_t MP4_GetFixedSampleSize( const mp4_track_t *p_track,
+                                               const MP4_Box_data_sample_soun_t *p_soun )
+{
+    uint32_t i_size = 0;
+
+    assert( p_track->i_sample_size != 0 );
+
+    /* broken stsz sample size == 1 */
+    if ( p_track->fmt.i_cat == AUDIO_ES &&
+         p_track->i_sample_size == 1 && p_soun->i_samplesize > p_track->i_sample_size * 8 )
+        i_size = p_soun->i_samplesize * p_soun->i_channelcount / 8;
+    else
+        i_size = p_track->i_sample_size;
+
+    return i_size;
+}
+
 static uint32_t MP4_TrackGetReadSize( mp4_track_t *p_track, uint32_t *pi_nb_samples )
 {
     uint32_t i_size = 0;
@@ -3088,6 +3104,24 @@ static uint32_t MP4_TrackGetReadSize( mp4_track_t *p_track, uint32_t *pi_nb_samp
         }
 
         /* uncompressed v0 (qt) or... not (ISO) */
+
+        uint32_t i_max_v0_samples;
+        switch( p_track->fmt.i_codec )
+        {
+            /* Compressed samples in V0 */
+            case VLC_CODEC_AMR_NB:
+            case VLC_CODEC_AMR_WB:
+                i_max_v0_samples = 16;
+                break;
+            default:
+                /* Read 25ms of samples (uncompressed) */
+                i_max_v0_samples = p_track->fmt.audio.i_rate / 40 *
+                                   p_track->fmt.audio.i_channels;
+                if( i_max_v0_samples < 1 )
+                    i_max_v0_samples = 1;
+                break;
+        }
+
         *pi_nb_samples = 0;
         for( uint32_t i=p_track->i_sample;
              i<p_chunk->i_sample_first+p_chunk->i_sample_count &&
@@ -3098,7 +3132,7 @@ static uint32_t MP4_TrackGetReadSize( mp4_track_t *p_track, uint32_t *pi_nb_samp
             if ( p_track->i_sample_size == 0 )
                 i_size += p_track->p_sample_size[i];
             else
-                i_size += p_track->i_sample_size;
+                i_size += MP4_GetFixedSampleSize( p_track, p_soun );
 
             /* Try to detect compression in ISO */
             if(p_soun->i_compressionid != 0)
@@ -3107,7 +3141,7 @@ static uint32_t MP4_TrackGetReadSize( mp4_track_t *p_track, uint32_t *pi_nb_samp
                 break;
             }
 
-            if ( *pi_nb_samples == QT_V0_MAX_SAMPLES )
+            if ( *pi_nb_samples == i_max_v0_samples )
                 break;
         }
     }
@@ -3134,7 +3168,7 @@ static uint64_t MP4_TrackGetPos( mp4_track_t *p_track )
         {
             i_pos += ( p_track->i_sample -
                        p_track->chunk[p_track->i_chunk].i_sample_first ) *
-                     p_track->i_sample_size;
+                     MP4_GetFixedSampleSize( p_track, p_soun );
         }
         else
         {

@@ -384,7 +384,6 @@ DEPS_res = \
 	pixmaps/toolbar/volume-slider-inside.png \
 	pixmaps/toolbar/volume-slider-outside.png \
 	pixmaps/types/capture-card_16px.png \
-	pixmaps/types/cdda_16px.png \
 	pixmaps/types/disc_16px.png \
 	pixmaps/types/file-asym_16px.png \
 	pixmaps/types/file-wide_16px.png \
@@ -395,7 +394,7 @@ DEPS_res = \
 	pixmaps/types/tape_16px.png \
 	pixmaps/types/type_directory.png \
 	pixmaps/types/type_file.png \
-	pixmaps/types/type_net.png \
+	pixmaps/types/type_stream.png \
 	pixmaps/types/type_node.png \
 	pixmaps/types/type_playlist.png \
 	pixmaps/types/type_unknown.xpm \

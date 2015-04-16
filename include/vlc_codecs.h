@@ -252,6 +252,8 @@ ATTR_PACKED
 #define WAVE_FORMAT_WMAP                0x0162 /* WMA 9 Professional */
 #define WAVE_FORMAT_WMAL                0x0163 /* WMA 9 Lossless */
 
+#define WAVE_FORMAT_CREATIVE_ADPCM      0x0200 /* Creative */
+
 #define WAVE_FORMAT_ULEAD_DV_AUDIO_NTSC 0x0215 /* Ulead */
 #define WAVE_FORMAT_ULEAD_DV_AUDIO_PAL  0x0216 /* Ulead */
 
@@ -369,6 +371,7 @@ wave_format_tag_to_fourcc[] =
     { WAVE_FORMAT_ALAW,             VLC_CODEC_ALAW,                   "A-Law" },
     { WAVE_FORMAT_MULAW,            VLC_CODEC_MULAW,                  "Mu-Law" },
     { WAVE_FORMAT_IMA_ADPCM,        VLC_CODEC_ADPCM_IMA_WAV,          "Ima-ADPCM" },
+    { WAVE_FORMAT_CREATIVE_ADPCM,   VLC_CODEC_ADPCM_CREATIVE,         "Creative ADPCM" },
     { WAVE_FORMAT_YAMAHA_ADPCM,     VLC_CODEC_ADPCM_YAMAHA,           "Yamaha ADPCM" },
     { WAVE_FORMAT_TRUESPEECH,       VLC_CODEC_TRUESPEECH,             "Truespeech" },
     { WAVE_FORMAT_GSM610,           VLC_CODEC_GSM_MS,                 "Microsoft WAV GSM" },
@@ -470,6 +473,15 @@ static inline int guidcmp( const GUID *s1, const GUID *s2 )
     return( s1->Data1 == s2->Data1 && s1->Data2 == s2->Data2 &&
             s1->Data3 == s2->Data3 && !memcmp( s1->Data4, s2->Data4, 8 ) );
 }
+
+#define GUID_FMT "0x%x-0x%x-0x%x-0x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x%2.2x"
+#define GUID_PRINT( guid )  \
+    (unsigned)(guid).Data1,              \
+    (guid).Data2,              \
+    (guid).Data3,              \
+    (guid).Data4[0],(guid).Data4[1],(guid).Data4[2],(guid).Data4[3],    \
+    (guid).Data4[4],(guid).Data4[5],(guid).Data4[6],(guid).Data4[7]
+
 
 static inline void sf_tag_to_fourcc( GUID *guid_tag,
                                      vlc_fourcc_t *fcc, const char **ppsz_name )

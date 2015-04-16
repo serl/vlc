@@ -193,11 +193,10 @@ char *vlc_path2uri (const char *path, const char *scheme)
     if (!strncmp (path, "\\\\", 2))
     {   /* Windows UNC paths */
         /* \\host\share\path -> file://host/share/path */
-        size_t hostlen = strcspn (path + 2, DIR_SEP);
+        int hostlen = strcspn (path + 2, DIR_SEP);
 
-        buf = malloc (7 + hostlen);
-        if (buf != NULL)
-            snprintf (buf, 7 + hostlen, "file://%s", path + 2);
+        if (asprintf (&buf, "file://%.*s", hostlen, path + 2) == -1)
+            buf = NULL;
         path += 2 + hostlen;
 
         if (path[0] == '\0')

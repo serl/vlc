@@ -66,14 +66,12 @@ vlc_module_end()
  *****************************************************************************/
 
 #define THREAD_NAME "android_window"
-extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
-extern void jni_detach_thread();
+extern JNIEnv *jni_get_env(const char *name);
 
 extern jobject jni_LockAndGetAndroidJavaSurface();
 extern jobject jni_LockAndGetSubtitlesSurface();
 extern void  jni_UnlockAndroidSurface();
 
-extern bool jni_IsVideoPlayerActivityCreated();
 extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
 extern int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *configured);
 extern int jni_GetWindowSize(int *width, int *height);
@@ -192,12 +190,16 @@ static picture_t *PictureAlloc(vout_display_sys_t *sys, video_format_t *fmt)
 
 static void FixSubtitleFormat(vout_display_sys_t *sys)
 {
-    video_format_t *p_subfmt = &sys->p_sub_window->fmt;
+    video_format_t *p_subfmt;
     video_format_t fmt;
     int i_width, i_height;
     int i_video_width, i_video_height;
     int i_display_width, i_display_height;
     double aspect;
+
+    if (!sys->p_sub_window)
+        return;
+    p_subfmt = &sys->p_sub_window->fmt;
 
     video_format_ApplyRotation(&fmt, &sys->p_window->fmt);
 
@@ -286,8 +288,40 @@ static void SetupPictureYV12(picture_t *p_picture, uint32_t i_in_stride)
     }
 }
 
+static int AndroidWindow_SetSurface(vout_display_sys_t *sys,
+                                    android_window *p_window,
+                                    jobject jsurf)
+{
+    if (jsurf != p_window->jsurf) {
+        if (p_window->p_handle_priv) {
+            sys->anwp.disconnect(p_window->p_handle_priv);
+            p_window->p_handle_priv = NULL;
+        }
+        if (p_window->p_handle) {
+            sys->anw.winRelease(p_window->p_handle);
+            p_window->p_handle = NULL;
+        }
+    }
+
+    p_window->jsurf = jsurf;
+    if (!p_window->jsurf )
+        return -1;
+    if (!p_window->p_handle && !p_window->b_opaque) {
+        JNIEnv *p_env;
+
+        if (!(p_env = jni_get_env(THREAD_NAME)))
+            return -1;
+        p_window->p_handle = sys->anw.winFromSurface(p_env, p_window->jsurf);
+        if (!p_window->p_handle)
+            return -1;
+    }
+
+    return 0;
+}
+
 static android_window *AndroidWindow_New(vout_display_sys_t *sys,
                                          video_format_t *p_fmt,
+                                         jobject jsurf,
                                          bool b_use_priv)
 {
     android_window *p_window = calloc(1, sizeof(android_window));
@@ -325,16 +359,19 @@ static android_window *AndroidWindow_New(vout_display_sys_t *sys,
     else
         video_format_ApplyRotation(&p_window->fmt, p_fmt);
     p_window->i_pic_count = 1;
+
+    if (AndroidWindow_SetSurface(sys, p_window, jsurf) != 0) {
+        free(p_window);
+        return NULL;
+    }
+
     return p_window;
 }
 
 static void AndroidWindow_Destroy(vout_display_sys_t *sys,
                                   android_window *p_window)
 {
-    if (p_window->p_handle_priv)
-        sys->anwp.disconnect(p_window->p_handle_priv);
-    if (p_window->p_handle)
-        sys->anw.winRelease(p_window->p_handle);
+    AndroidWindow_SetSurface(sys, p_window, NULL);
     free(p_window);
 }
 
@@ -349,35 +386,6 @@ static int AndroidWindow_UpdateCrop(vout_display_sys_t *sys,
                              p_window->fmt.i_y_offset,
                              p_window->fmt.i_visible_width,
                              p_window->fmt.i_visible_height);
-}
-
-static int AndroidWindow_SetSurface(vout_display_sys_t *sys,
-                                    android_window *p_window,
-                                    jobject jsurf)
-{
-    if (p_window->p_handle && jsurf != p_window->jsurf) {
-        if (p_window->p_handle_priv) {
-            sys->anwp.disconnect(p_window->p_handle_priv);
-            p_window->p_handle_priv = NULL;
-        }
-        sys->anw.winRelease(p_window->p_handle);
-        p_window->p_handle = NULL;
-    }
-
-    p_window->jsurf = jsurf;
-    if (!p_window->p_handle && !p_window->b_opaque) {
-        JNIEnv *p_env;
-
-        jni_attach_thread(&p_env, THREAD_NAME);
-        if (!p_env)
-            return -1;
-        p_window->p_handle = sys->anw.winFromSurface(p_env, p_window->jsurf);
-        jni_detach_thread();
-        if (!p_window->p_handle)
-            return -1;
-    }
-
-    return 0;
 }
 
 static int AndroidWindow_SetupANWP(vout_display_sys_t *sys,
@@ -576,26 +584,6 @@ static int AndroidWindow_LockPicture(vout_display_sys_t *sys,
     return 0;
 }
 
-static int SetupWindowSurface(vout_display_sys_t *sys, unsigned i_pic_count)
-{
-    int err;
-    jobject jsurf = jni_LockAndGetAndroidJavaSurface();
-    err = AndroidWindow_SetSurface(sys, sys->p_window, jsurf);
-    jni_UnlockAndroidSurface();
-    err = err == 0 ? AndroidWindow_Setup(sys, sys->p_window, i_pic_count) : err;
-    return err;
-}
-
-static int SetupWindowSubtitleSurface(vout_display_sys_t *sys)
-{
-    int err;
-    jobject jsurf = jni_LockAndGetSubtitlesSurface();
-    err = AndroidWindow_SetSurface(sys, sys->p_sub_window, jsurf);
-    jni_UnlockAndroidSurface();
-    err = err == 0 ? AndroidWindow_Setup(sys, sys->p_sub_window, 1) : err;
-    return err;
-}
-
 static void SetRGBMask(video_format_t *p_fmt)
 {
     switch(p_fmt->i_chroma) {
@@ -632,15 +620,9 @@ static int Open(vlc_object_t *p_this)
     vout_display_t *vd = (vout_display_t*)p_this;
     vout_display_sys_t *sys;
     video_format_t sub_fmt;
+    jobject jsurf;
 
     if (vout_display_IsWindowed(vd))
-        return VLC_EGENERIC;
-
-    /* XXX: android_window use a surface created by VideoPlayerActivity to
-     * alloc pictures. Don't try to open the vout if this activity is not
-     * created. This need to be replaced by something like var_CreateGetAddress
-     * (vd, "drawable-android") in the future. */
-    if (!jni_IsVideoPlayerActivityCreated())
         return VLC_EGENERIC;
 
     /* Allocate structure */
@@ -691,11 +673,15 @@ static int Open(vlc_object_t *p_this)
         }
     }
 
-    sys->p_window = AndroidWindow_New(sys, &vd->fmt, true);
+    jsurf = jni_LockAndGetAndroidJavaSurface();
+    if (!jsurf)
+        goto error;
+    sys->p_window = AndroidWindow_New(sys, &vd->fmt, jsurf, true);
+    jni_UnlockAndroidSurface();
     if (!sys->p_window)
         goto error;
 
-    if (SetupWindowSurface(sys, 0) != 0)
+    if (AndroidWindow_Setup(sys, sys->p_window, 0) != 0)
         goto error;
 
     /* use software rotation if we don't use private anw */
@@ -705,18 +691,24 @@ static int Open(vlc_object_t *p_this)
     msg_Dbg(vd, "using %s", sys->p_window->b_opaque ? "opaque" :
             (sys->p_window->b_use_priv ? "ANWP" : "ANW"));
 
-    video_format_ApplyRotation(&sub_fmt, &vd->fmt);
-    sub_fmt.i_chroma = subpicture_chromas[0];
-    SetRGBMask(&sub_fmt);
-    video_format_FixRgb(&sub_fmt);
-    sys->p_sub_window = AndroidWindow_New(sys, &sub_fmt, false);
-    if (!sys->p_sub_window)
-        goto error;
-    FixSubtitleFormat(sys);
-    sys->i_sub_last_order = -1;
+    jsurf = jni_LockAndGetSubtitlesSurface();
+    if (jsurf) {
+        video_format_ApplyRotation(&sub_fmt, &vd->fmt);
+        sub_fmt.i_chroma = subpicture_chromas[0];
+        SetRGBMask(&sub_fmt);
+        video_format_FixRgb(&sub_fmt);
 
-    /* Export the subpicture capability of this vout. */
-    vd->info.subpicture_chromas = subpicture_chromas;
+        sys->p_sub_window = AndroidWindow_New(sys, &sub_fmt, jsurf, false);
+        jni_UnlockAndroidSurface();
+        if (!sys->p_sub_window)
+            goto error;
+
+        FixSubtitleFormat(sys);
+        sys->i_sub_last_order = -1;
+
+        /* Export the subpicture capability of this vout. */
+        vd->info.subpicture_chromas = subpicture_chromas;
+    }
 
     /* Setup vout_display */
     vd->pool    = Pool;
@@ -811,7 +803,7 @@ static picture_pool_t *PoolAlloc(vout_display_t *vd, unsigned requested_count)
     unsigned int i = 0;
 
     msg_Dbg(vd, "PoolAlloc: request %d frames", requested_count);
-    if (SetupWindowSurface(sys, requested_count) != 0)
+    if (AndroidWindow_Setup(sys, sys->p_window, requested_count) != 0)
         goto error;
 
     requested_count = sys->p_window->i_pic_count;
@@ -985,7 +977,7 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
 
     SendEventDisplaySize(vd);
 
-    if (subpicture) {
+    if (subpicture && sys->p_sub_window) {
         if (sys->b_sub_invalid) {
             sys->b_sub_invalid = false;
             if (sys->p_sub_pic) {
@@ -1000,9 +992,10 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
             sys->p_sub_buffer_bounds = NULL;
         }
 
-        if (!sys->p_sub_pic && SetupWindowSubtitleSurface(sys) == 0)
+        if (!sys->p_sub_pic
+         && AndroidWindow_Setup(sys, sys->p_sub_window, 1) == 0)
             sys->p_sub_pic = PictureAlloc(sys, &sys->p_sub_window->fmt);
-        if (!sys->p_spu_blend)
+        if (!sys->p_spu_blend && sys->p_sub_pic)
             sys->p_spu_blend = filter_NewBlend(VLC_OBJECT(vd),
                                                &sys->p_sub_pic->format);
 

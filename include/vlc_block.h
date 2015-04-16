@@ -297,7 +297,6 @@ static inline block_t *block_ChainGather( block_t *p_list )
  ****************************************************************************
  * - block_FifoNew : create and init a new fifo
  * - block_FifoRelease : destroy a fifo and free all blocks in it.
- * - block_FifoPace : wait for a fifo to drain to a specified number of packets or total data size
  * - block_FifoEmpty : free all blocks in a fifo
  * - block_FifoPut : put a block
  * - block_FifoGet : get a packet from the fifo (and wait if it is empty)
@@ -311,13 +310,35 @@ static inline block_t *block_ChainGather( block_t *p_list )
 
 VLC_API block_fifo_t *block_FifoNew( void ) VLC_USED VLC_MALLOC;
 VLC_API void block_FifoRelease( block_fifo_t * );
-VLC_API void block_FifoPace( block_fifo_t *fifo, size_t max_depth, size_t max_size );
 VLC_API void block_FifoEmpty( block_fifo_t * );
-VLC_API size_t block_FifoPut( block_fifo_t *, block_t * );
-VLC_API void block_FifoWake( block_fifo_t * );
+VLC_API void block_FifoPut( block_fifo_t *, block_t * );
 VLC_API block_t * block_FifoGet( block_fifo_t * ) VLC_USED;
 VLC_API block_t * block_FifoShow( block_fifo_t * );
 size_t block_FifoSize(block_fifo_t *) VLC_USED;
 VLC_API size_t block_FifoCount(block_fifo_t *) VLC_USED;
+
+typedef struct block_fifo_t vlc_fifo_t;
+
+VLC_API void vlc_fifo_Lock(vlc_fifo_t *);
+VLC_API void vlc_fifo_Unlock(vlc_fifo_t *);
+VLC_API void vlc_fifo_Signal(vlc_fifo_t *);
+VLC_API void vlc_fifo_Wait(vlc_fifo_t *);
+VLC_API void vlc_fifo_WaitCond(vlc_fifo_t *, vlc_cond_t *);
+VLC_API void vlc_fifo_QueueUnlocked(vlc_fifo_t *, block_t *);
+VLC_API block_t *vlc_fifo_DequeueUnlocked(vlc_fifo_t *) VLC_USED;
+VLC_API block_t *vlc_fifo_DequeueAllUnlocked(vlc_fifo_t *) VLC_USED;
+VLC_API size_t vlc_fifo_GetCount(const vlc_fifo_t *) VLC_USED;
+VLC_API size_t vlc_fifo_GetBytes(const vlc_fifo_t *) VLC_USED;
+
+VLC_USED static inline bool vlc_fifo_IsEmpty(const vlc_fifo_t *fifo)
+{
+    return vlc_fifo_GetCount(fifo) == 0;
+}
+
+static inline void vlc_fifo_Cleanup(void *fifo)
+{
+    vlc_fifo_Unlock((vlc_fifo_t *)fifo);
+}
+#define vlc_fifo_CleanupPush(fifo) vlc_cleanup_push(vlc_fifo_Cleanup, fifo)
 
 #endif /* VLC_BLOCK_H */
