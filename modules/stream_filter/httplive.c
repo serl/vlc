@@ -207,9 +207,9 @@ static void hls_printStatus(stream_sys_t *p_sys)
     last_second = p_sys->playback.current_time;
     last_downloaded = p_sys->download.segment;
 
-    printf("CURRENT TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
-      p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, BBA0(p_sys), p_sys->download.composition);
-    //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
+    printf("CURRENT TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
+      p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, BBA0(p_sys), p_sys->download.composition);
+    printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
 
@@ -1726,6 +1726,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     hls_stringAppend(p_sys->download.composition, *cur_stream);
     //p_sys->buffer_size += segment->size;
     p_sys->download.total_seconds += segment->duration;
+    p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time;
     if (hls->bandwidth == 0 && segment->duration > 0)
     {
         /* Try to estimate the bandwidth for this stream */
@@ -1787,12 +1788,11 @@ static void* hls_Thread(void *p_this)
         hls_stream_t *hls = hls_Get(p_sys->hls_stream, p_sys->download.stream);
         assert(hls);
 
-        /* ol' code
-        / * Sliding window (~60 seconds worth of movie) * /
         vlc_mutex_lock(&hls->lock);
         int count = vlc_array_count(hls->segments);
         vlc_mutex_unlock(&hls->lock);
 
+        /* ol' code
         / * Is there a new segment to process? * /
         if ((!p_sys->b_live && (p_sys->playback.segment < (count - 6))) ||
             (p_sys->download.segment >= count))
@@ -1845,7 +1845,7 @@ static void* hls_Thread(void *p_this)
             p_sys->download.segment = p_sys->download.seek;
             p_sys->download.seek = -1;
         }
-        //else if (p_sys->download.segment < count)
+        else if (p_sys->download.segment < count)
             p_sys->download.segment++;
         vlc_cond_signal(&p_sys->download.wait);
         vlc_mutex_unlock(&p_sys->download.lock_wait);
