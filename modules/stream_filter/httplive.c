@@ -166,7 +166,7 @@ struct stream_sys_t
     vlc_mutex_t  lock;
     bool         paused;
 
-    //int buffer_size;
+    int algorithm;
 };
 
 /****************************************************************************
@@ -195,6 +195,12 @@ static hls_stream_t *hls_GetLast(vlc_array_t *hls_stream);
 /****************************************************************************
  * My functions
  ****************************************************************************/
+
+#define HTTPLIVE_ALGO_CLASSIC 0
+#define HTTPLIVE_ALGO_BBA0 1
+
+#define HTTPLIVE_ALGO HTTPLIVE_ALGO_BBA0
+
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
@@ -207,8 +213,15 @@ static void hls_printStatus(stream_sys_t *p_sys)
     last_second = p_sys->playback.current_time;
     last_downloaded = p_sys->download.segment;
 
-    printf("CURRENT TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
-      p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, BBA0(p_sys), p_sys->download.composition);
+    long t;
+    struct timespec current_timestamp;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
+    t = current_timestamp.tv_sec - p_sys->playback.start_time;
+    if (t < 0)
+        t = 0;
+
+    printf("T: %lds, PLAYING TIME: %lds, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", BBA0: %d\nDOWNLOAD COMPOSITION: %s\n",
+      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, BBA0(p_sys), p_sys->download.composition);
     printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
@@ -1724,7 +1737,6 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     }
     mtime_t duration = mdate() - start;
     hls_stringAppend(p_sys->download.composition, *cur_stream);
-    //p_sys->buffer_size += segment->size;
     p_sys->download.total_seconds += segment->duration;
     p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time;
     if (hls->bandwidth == 0 && segment->duration > 0)
@@ -2167,7 +2179,11 @@ static int Open(vlc_object_t *p_this)
     if (!isHTTPLiveStreaming(s))
         return VLC_EGENERIC;
 
-    msg_Info(p_this, "HTTP Live Streaming (%s)", s->psz_path);
+    char* algorithm = "classic";
+    if (HTTPLIVE_ALGO == HTTPLIVE_ALGO_BBA0)
+        algorithm = "bba0";
+
+    msg_Info(p_this, "HTTP Live Streaming (%s), using %s algorithm", s->psz_path, algorithm);
 
     /* Initialize crypto bit */
     vlc_gcrypt_init();
@@ -2199,11 +2215,11 @@ static int Open(vlc_object_t *p_this)
     p_sys->b_live = true;
     p_sys->b_meta = false;
     p_sys->b_error = false;
-    //p_sys->buffer_size = 0;
     p_sys->download.composition[0] = '\0';
     p_sys->download.total_seconds = 0;
     p_sys->playback.start_time = -1;
     p_sys->playback.buffer_size = 0;
+    p_sys->algorithm = HTTPLIVE_ALGO;
 
     p_sys->hls_stream = vlc_array_new();
     if (p_sys->hls_stream == NULL)
@@ -2591,7 +2607,6 @@ static int Read(stream_t *s, void *buffer, unsigned int i_read)
     }
 
     p_sys->playback.offset += length;
-    //p_sys->buffer_size -= length;
 
     struct timespec current_timestamp;
     clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
