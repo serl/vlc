@@ -63,6 +63,16 @@ vlc_module_end()
  *
  *****************************************************************************/
 #define PLAYBACK_DELAY 1 /* not really scientific */
+#define HTTPLIVE_ALGO_CLASSIC 0
+#define HTTPLIVE_ALGO_BBA0 1
+
+#define HTTPLIVE_ALGO HTTPLIVE_ALGO_BBA0
+
+#define HTTPLIVE_CLASSIC_BUFFERSIZE 24 /* in segments */
+#define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
+#define HTTPLIVE_BBA0_CUSHION 126
+#define HTTPLIVE_BBA0_BUFFER_SIZE 240
+
 #define AES_BLOCK_SIZE 16 /* Only support AES-128 */
 typedef struct segment_s
 {
@@ -195,12 +205,6 @@ static hls_stream_t *hls_GetLast(vlc_array_t *hls_stream);
 /****************************************************************************
  * My functions
  ****************************************************************************/
-
-#define HTTPLIVE_ALGO_CLASSIC 0
-#define HTTPLIVE_ALGO_BBA0 1
-
-#define HTTPLIVE_ALGO HTTPLIVE_ALGO_BBA0
-
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
@@ -237,9 +241,6 @@ static uint64_t hls_GetStreamBandwidth(stream_sys_t *p_sys, int stream_index)
 }
 
 // BBA0
-#define BBA0_RESERVOIR 90
-#define BBA0_CUSHION 126
-#define BBA0_BUFFER_SIZE 240
 static uint64_t BBA0_f(stream_sys_t *p_sys)
 {
     hls_stream_t *hlsMax = hls_GetLast(p_sys->hls_stream);
@@ -247,17 +248,17 @@ static uint64_t BBA0_f(stream_sys_t *p_sys)
     uint64_t rMax = hlsMax->bandwidth;
     uint64_t rMin = hlsMin->bandwidth;
 
-    if (p_sys->playback.buffer_size < BBA0_RESERVOIR)
+    if (p_sys->playback.buffer_size < HTTPLIVE_BBA0_RESERVOIR)
         return rMin;
-    if (p_sys->playback.buffer_size >= BBA0_RESERVOIR + BBA0_CUSHION)
+    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA0_RESERVOIR + HTTPLIVE_BBA0_CUSHION)
         return rMax;
-    int slope = (rMax-rMin) / BBA0_CUSHION;
-    return rMin + slope * (p_sys->playback.buffer_size - BBA0_RESERVOIR);
+    int slope = (rMax-rMin) / HTTPLIVE_BBA0_CUSHION;
+    return rMin + slope * (p_sys->playback.buffer_size - HTTPLIVE_BBA0_RESERVOIR);
     //printf("%"PRIu64", %"PRIu64"");
 }
 static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
 {
-    if (p_sys->playback.buffer_size >= BBA0_BUFFER_SIZE)
+    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA0_BUFFER_SIZE)
         return -1;
 
     int count = vlc_array_count(p_sys->hls_stream);
@@ -265,9 +266,9 @@ static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicit
     int min_stream = 0;
 
     // simple cases...
-    if (p_sys->playback.buffer_size <= BBA0_RESERVOIR)
+    if (p_sys->playback.buffer_size <= HTTPLIVE_BBA0_RESERVOIR)
         return min_stream;
-    if (p_sys->playback.buffer_size >= BBA0_RESERVOIR + BBA0_CUSHION)
+    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA0_RESERVOIR + HTTPLIVE_BBA0_CUSHION)
         return max_stream;
 
     // now serious business!
@@ -1758,14 +1759,12 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
                 segment->sequence, *cur_stream);
 
     uint64_t bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
-    //printf("CURRENT BANDWIDTH: %"PRIu64"bits/s\n", bw);
     p_sys->bandwidth = bw;
-    /* kill the original algorithm
-    if (p_sys->b_meta && (hls->bandwidth != bw))
+    if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC && p_sys->b_meta && (hls->bandwidth != bw))
     {
         int newstream = BandwidthAdaptation(s, hls->id, &bw);
 
-        / * FIXME: we need an average here * /
+        /* FIXME: we need an average here */
         if ((newstream >= 0) && (newstream != *cur_stream))
         {
             msg_Dbg(s, "detected %s bandwidth (%"PRIu64") stream",
@@ -1773,7 +1772,6 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
             *cur_stream = newstream;
         }
     }
-    */
     return VLC_SUCCESS;
 }
 
@@ -1786,16 +1784,19 @@ static void* hls_Thread(void *p_this)
 
     while (vlc_object_alive(s))
     {
-        int next_stream;
-        vlc_mutex_lock(&p_sys->download.lock_wait);
-        while ((next_stream = BBA0(p_sys)) == -1) // buffer full
+        if (p_sys->algorithm != HTTPLIVE_ALGO_CLASSIC)
         {
-            vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
-            if (!vlc_object_alive(s))
-                break;
+            int next_stream;
+            vlc_mutex_lock(&p_sys->download.lock_wait);
+            while ((next_stream = BBA0(p_sys)) == -1) // buffer full
+            {
+                vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
+                if (!vlc_object_alive(s))
+                    break;
+            }
+            p_sys->download.stream = next_stream;
+            vlc_mutex_unlock(&p_sys->download.lock_wait);
         }
-        p_sys->download.stream = next_stream;
-        vlc_mutex_unlock(&p_sys->download.lock_wait);
 
         hls_stream_t *hls = hls_Get(p_sys->hls_stream, p_sys->download.stream);
         assert(hls);
@@ -1804,24 +1805,24 @@ static void* hls_Thread(void *p_this)
         int count = vlc_array_count(hls->segments);
         vlc_mutex_unlock(&hls->lock);
 
-        /* ol' code
-        / * Is there a new segment to process? * /
-        if ((!p_sys->b_live && (p_sys->playback.segment < (count - 6))) ||
-            (p_sys->download.segment >= count))
+        /* Classic algorithm: Is there a new segment to process? */
+        if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC &&
+            ((!p_sys->b_live && p_sys->playback.segment < count - HTTPLIVE_CLASSIC_BUFFERSIZE) ||
+            p_sys->download.segment >= count))
         {
-            / * wait * /
+            /* wait */
             vlc_mutex_lock(&p_sys->download.lock_wait);
-            while (((p_sys->download.segment - p_sys->playback.segment > 6) ||
+            while (((p_sys->download.segment - p_sys->playback.segment > HTTPLIVE_CLASSIC_BUFFERSIZE) ||
                     (p_sys->download.segment >= count)) &&
                    (p_sys->download.seek == -1))
             {
                 vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
-                if (p_sys->b_live / *&& (mdate() >= p_sys->playlist.wakeup)* /)
+                if (p_sys->b_live /*&& (mdate() >= p_sys->playlist.wakeup)*/)
                     break;
                 if (!vlc_object_alive(s))
                     break;
             }
-            / * * /
+            /* */
             if (p_sys->download.seek >= 0)
             {
                 p_sys->download.segment = p_sys->download.seek;
@@ -1829,7 +1830,6 @@ static void* hls_Thread(void *p_this)
             }
             vlc_mutex_unlock(&p_sys->download.lock_wait);
         }
-        */
 
         if (!vlc_object_alive(s)) break;
 
@@ -2256,7 +2256,7 @@ static int Open(vlc_object_t *p_this)
            sizeof( hls_stream_t* ), &hls_CompareStreams );
 
     /* Choose first HLS stream to start with */
-    int current = p_sys->playback.stream = 0;
+    int current = p_sys->playback.stream = p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC ? p_sys->hls_stream->i_count-1 : 0;
     p_sys->playback.segment = p_sys->download.segment = ChooseSegment(s, current);
 
     /* manage encryption key if needed */
