@@ -212,6 +212,14 @@ static time_t getTime()
     clock_gettime(CLOCK_MONOTONIC_RAW, &current_timestamp);
     return current_timestamp.tv_sec * 1000 + current_timestamp.tv_nsec / 1000000;
 }
+static bool isStalling(stream_sys_t *p_sys)
+{
+    hls_stream_t *hls = hls_Get(p_sys->hls_stream, p_sys->playback.stream);
+    vlc_mutex_lock(&hls->lock);
+    int count = vlc_array_count(hls->segments);
+    vlc_mutex_unlock(&hls->lock);
+    return p_sys->download.segment < count && p_sys->playback.segment == p_sys->download.segment;
+}
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
@@ -229,9 +237,9 @@ static void hls_printStatus(stream_sys_t *p_sys)
     if (t < 0)
         t = 0;
 
-    printf("T: %ldms, PLAYING TIME: %ldms, BUFFER: %lds, PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", STALL: %d\nDOWNLOAD COMPOSITION: %s\n",
-      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, p_sys->playback.segment == p_sys->download.segment, p_sys->download.composition);
-    printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
+    printf("T: %ldms, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", STALLING: %d\nDOWNLOAD COMPOSITION: %s\n",
+      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, isStalling(p_sys), p_sys->download.composition);
+    //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
 
@@ -2499,7 +2507,7 @@ static ssize_t hls_Read(stream_t *s, uint8_t *p_read, unsigned int i_read)
 
     do
     {
-        if (p_sys->playback.segment == p_sys->download.segment)
+        if (isStalling(p_sys))
         { //we're going to rebuffer now!
             p_sys->last_read_timestamp = -1;
             p_sys->playback.current_time += PLAYBACK_DELAY;
