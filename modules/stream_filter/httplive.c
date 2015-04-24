@@ -223,6 +223,26 @@ static bool isStalling(stream_sys_t *p_sys)
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
+static char* hls_getAlgorithmName(int algorithm)
+{
+    char* algorithmName = "classic";
+    if (algorithm == HTTPLIVE_ALGO_BBA0)
+        algorithmName = "bba0";
+
+    return algorithmName;
+}
+static void hls_printInitInfo(stream_sys_t *p_sys)
+{
+    printf("ALGORITHM: %s\n", hls_getAlgorithmName(p_sys->algorithm));
+    printf("STREAMS: ");
+    for (int i = 0; i < vlc_array_count(p_sys->hls_stream); i++)
+    {
+        hls_stream_t *hls = hls_Get(p_sys->hls_stream, i);
+        printf("%"PRIu64" ", hls->bandwidth);
+    }
+    printf("\n");
+}
+
 static int last_second = -1;
 static int last_downloaded = -1;
 static void hls_printStatus(stream_sys_t *p_sys)
@@ -2192,11 +2212,9 @@ static int Open(vlc_object_t *p_this)
     if (!isHTTPLiveStreaming(s))
         return VLC_EGENERIC;
 
-    char* algorithm = "classic";
-    if (HTTPLIVE_ALGO == HTTPLIVE_ALGO_BBA0)
-        algorithm = "bba0";
+    int algorithm = HTTPLIVE_ALGO;
 
-    msg_Info(p_this, "HTTP Live Streaming (%s), using %s algorithm", s->psz_path, algorithm);
+    msg_Info(p_this, "HTTP Live Streaming (%s), using %s algorithm", s->psz_path, hls_getAlgorithmName(algorithm));
 
     /* Initialize crypto bit */
     vlc_gcrypt_init();
@@ -2232,7 +2250,7 @@ static int Open(vlc_object_t *p_this)
     p_sys->download.total_seconds = 0;
     p_sys->playback.start_time = -1;
     p_sys->playback.buffer_size = 0;
-    p_sys->algorithm = HTTPLIVE_ALGO;
+    p_sys->algorithm = algorithm;
     p_sys->last_read_timestamp = -1;
 
     p_sys->hls_stream = vlc_array_new();
@@ -2269,6 +2287,7 @@ static int Open(vlc_object_t *p_this)
     qsort( p_sys->hls_stream->pp_elems, p_sys->hls_stream->i_count,
            sizeof( hls_stream_t* ), &hls_CompareStreams );
 
+    hls_printInitInfo(p_sys);
     /* Choose first HLS stream to start with */
     int current = p_sys->playback.stream = p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC ? p_sys->hls_stream->i_count-1 : 0;
     p_sys->playback.segment = p_sys->download.segment = ChooseSegment(s, current);
