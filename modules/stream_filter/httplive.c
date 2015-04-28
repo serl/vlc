@@ -134,6 +134,7 @@ struct stream_sys_t
         vlc_mutex_t lock_wait;  /* protect segment download counter */
         vlc_cond_t  wait;       /* some condition to wait on */
 
+        bool active;
         long total_seconds;
         char composition[200]; //segfault, I see you
     } download;
@@ -267,8 +268,8 @@ static void hls_printStatus(stream_sys_t *p_sys)
     if (t < 0)
         t = 0;
 
-    printf("T: %ldms, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAYING STREAM/SEGMENT: %d/%d, DOWNLOADING STREAM/SEGMENT: %d/%d, BANDWIDTH: %"PRIu64", STALLING: %d\nDOWNLOAD COMPOSITION: %s\n",
-      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, p_sys->download.stream, p_sys->download.segment, p_sys->bandwidth, isStalling(p_sys), p_sys->download.composition);
+    printf("T: %ldms, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (stall): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
+      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isStalling(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->download.composition);
     //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
@@ -1771,15 +1772,18 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
         }
     }
 
+    p_sys->download.active = true;
     mtime_t start = mdate();
     if (hls_Download(s, segment) != VLC_SUCCESS)
     {
         msg_Err(s, "downloading segment %d from stream %d failed",
                     segment->sequence, *cur_stream);
+        p_sys->download.active = false;
         vlc_mutex_unlock(&segment->lock);
         return VLC_EGENERIC;
     }
     mtime_t duration = mdate() - start;
+    p_sys->download.active = false;
     hls_stringAppend(p_sys->download.composition, *cur_stream);
     p_sys->download.total_seconds += segment->duration;
     p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time / 1000;
@@ -2256,6 +2260,7 @@ static int Open(vlc_object_t *p_this)
     p_sys->b_live = true;
     p_sys->b_meta = false;
     p_sys->b_error = false;
+    p_sys->download.active = false;
     p_sys->download.composition[0] = '\0';
     p_sys->download.total_seconds = 0;
     p_sys->playback.start_time = -1;
