@@ -66,7 +66,7 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_CLASSIC 0
 #define HTTPLIVE_ALGO_BBA0 1
 
-#define HTTPLIVE_ALGO HTTPLIVE_ALGO_BBA0
+#define HTTPLIVE_DEFAULT_ALGO HTTPLIVE_ALGO_CLASSIC
 
 #define HTTPLIVE_CLASSIC_BUFFERSIZE 24 /* in segments */
 #define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
@@ -223,6 +223,16 @@ static bool isStalling(stream_sys_t *p_sys)
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
+static int hls_getAlgorithmId(char *name)
+{
+    if (name == NULL)
+        return HTTPLIVE_DEFAULT_ALGO;
+    if (strcmp(name, "BBA0") == 0)
+        return HTTPLIVE_ALGO_BBA0;
+    if (strcmp(name, "CLASSIC") == 0)
+        return HTTPLIVE_ALGO_CLASSIC;
+    return HTTPLIVE_DEFAULT_ALGO;
+}
 static char* hls_getAlgorithmName(int algorithm)
 {
     char* algorithmName = "classic";
@@ -2212,7 +2222,7 @@ static int Open(vlc_object_t *p_this)
     if (!isHTTPLiveStreaming(s))
         return VLC_EGENERIC;
 
-    int algorithm = HTTPLIVE_ALGO;
+    int algorithm = hls_getAlgorithmId(getenv("HTTPLIVE_ALGORITHM"));
 
     msg_Info(p_this, "HTTP Live Streaming (%s), using %s algorithm", s->psz_path, hls_getAlgorithmName(algorithm));
 
