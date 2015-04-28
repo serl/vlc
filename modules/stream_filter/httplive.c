@@ -256,13 +256,15 @@ static void hls_printInitInfo(stream_sys_t *p_sys)
 
 static int last_second = -1;
 static int last_downloaded = -1;
+static bool was_downloading = false;
 static void hls_printStatus(stream_sys_t *p_sys)
 {
     // once a second is enough
     int current_second = p_sys->playback.current_time / 1000;
-    if (last_second == current_second && last_downloaded == p_sys->download.segment) return;
+    if (last_second == current_second && last_downloaded == p_sys->download.segment && was_downloading == p_sys->download.active) return;
     last_second = current_second;
     last_downloaded = p_sys->download.segment;
+    was_downloading = p_sys->download.active;
 
     long t = getTime() - p_sys->playback.start_time;
     if (t < 0)
@@ -1773,6 +1775,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     }
 
     p_sys->download.active = true;
+    hls_printStatus(p_sys);
     mtime_t start = mdate();
     if (hls_Download(s, segment) != VLC_SUCCESS)
     {
