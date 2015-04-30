@@ -2266,7 +2266,8 @@ static int Open(vlc_object_t *p_this)
     p_sys->download.active = false;
     p_sys->download.composition[0] = '\0';
     p_sys->download.total_seconds = 0;
-    p_sys->playback.start_time = -1;
+    p_sys->playback.start_time = getTime();
+    p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
     p_sys->algorithm = algorithm;
     p_sys->last_read_timestamp = -1;
@@ -2349,9 +2350,6 @@ static int Open(vlc_object_t *p_this)
             vlc_join(p_sys->reload, NULL);
         goto fail_thread;
     }
-
-    p_sys->playback.start_time = getTime();
-    p_sys->playback.current_time = - PLAYBACK_DELAY;
 
     return VLC_SUCCESS;
 
