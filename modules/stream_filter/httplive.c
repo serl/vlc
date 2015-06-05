@@ -147,7 +147,6 @@ struct stream_sys_t
         int         segment;    /* current segment for playback */
 
         long current_time;      /* milliseconds */
-        long start_time;        /* milliseconds */
         long buffer_size;       /* seconds */
     } playback;
 
@@ -266,12 +265,11 @@ static void hls_printStatus(stream_sys_t *p_sys)
     last_downloaded = p_sys->download.segment;
     was_downloading = p_sys->download.active;
 
-    long t = getTime() - p_sys->playback.start_time;
-    if (t < 0)
-        t = 0;
+    struct timespec curtime;
+    clock_gettime(CLOCK_REALTIME, &curtime);
 
-    printf("T: %ldms, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
-      t, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->download.composition);
+    printf("T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
+      (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->download.composition);
     //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
@@ -2266,7 +2264,6 @@ static int Open(vlc_object_t *p_this)
     p_sys->download.active = false;
     p_sys->download.composition[0] = '\0';
     p_sys->download.total_seconds = 0;
-    p_sys->playback.start_time = getTime();
     p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
     p_sys->algorithm = algorithm;
