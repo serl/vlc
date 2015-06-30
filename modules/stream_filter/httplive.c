@@ -69,6 +69,8 @@ vlc_module_end()
 #define HTTPLIVE_DEFAULT_ALGO HTTPLIVE_ALGO_CLASSIC
 
 #define HTTPLIVE_CLASSIC_BUFFERSIZE 24 /* in segments */
+#define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
+
 #define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
 #define HTTPLIVE_BBA0_CUSHION 126
 #define HTTPLIVE_BBA0_BUFFER_SIZE 240
@@ -124,6 +126,7 @@ struct stream_sys_t
     /* */
     vlc_array_t  *hls_stream;   /* bandwidth adaptation */
     uint64_t      bandwidth;    /* measured bandwidth (bits per second) */
+    uint64_t      avg_bandwidth;/* running average of measured bandwidth (bits per second) */
 
     /* Download */
     struct hls_download_s
@@ -268,8 +271,8 @@ static void hls_printStatus(stream_sys_t *p_sys)
     struct timespec curtime;
     clock_gettime(CLOCK_REALTIME, &curtime);
 
-    printf("T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
-      (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->download.composition);
+    printf("T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64", AVG BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
+      (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->avg_bandwidth, p_sys->download.composition);
     //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
     fflush(stdout);
 }
@@ -1761,10 +1764,10 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     }
 
     /* sanity check - can we download this segment on time? */
-    if ((p_sys->bandwidth > 0) && (hls->bandwidth > 0))
+    if ((p_sys->avg_bandwidth > 0) && (hls->bandwidth > 0))
     {
         uint64_t size = (segment->duration * hls->bandwidth); /* bits */
-        int estimated = (int)(size / p_sys->bandwidth);
+        int estimated = (int)(size / p_sys->avg_bandwidth);
         if (estimated > segment->duration)
         {
             msg_Warn(s,"downloading segment %d predicted to take %ds, which exceeds its length (%ds)",
@@ -1808,6 +1811,11 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
 
     uint64_t bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
     p_sys->bandwidth = bw;
+    if (p_sys->avg_bandwidth == 0)
+        p_sys->avg_bandwidth = bw;
+    else
+        p_sys->avg_bandwidth = (p_sys->avg_bandwidth*HTTPLIVE_CLASSIC_PAST_WEIGHT + bw*(10-HTTPLIVE_CLASSIC_PAST_WEIGHT)) / 10;
+    bw = p_sys->avg_bandwidth;
     if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC && p_sys->b_meta && (hls->bandwidth != bw))
     {
         int newstream = BandwidthAdaptation(s, hls->id, &bw);
@@ -2258,6 +2266,7 @@ static int Open(vlc_object_t *p_this)
     s->psz_path = new_path;
 
     p_sys->bandwidth = 0;
+    p_sys->avg_bandwidth = 0;
     p_sys->b_live = true;
     p_sys->b_meta = false;
     p_sys->b_error = false;
