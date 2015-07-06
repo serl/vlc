@@ -66,9 +66,7 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_CLASSIC 0
 #define HTTPLIVE_ALGO_BBA0 1
 
-#define HTTPLIVE_DEFAULT_ALGO HTTPLIVE_ALGO_CLASSIC
-
-#define HTTPLIVE_CLASSIC_BUFFERSIZE 24 /* in segments */
+#define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
 #define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
 
 #define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
@@ -180,6 +178,7 @@ struct stream_sys_t
     bool         paused;
 
     int algorithm;
+    int algorithm_classic_buffersize;
     long last_read_timestamp;
 };
 
@@ -226,15 +225,28 @@ static bool isBuffering(stream_sys_t *p_sys)
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
 
-static int hls_getAlgorithmId(char *name)
+static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
 {
+    char* def = "classic";
+    int namelen = strlen(def);
     if (name == NULL)
-        return HTTPLIVE_DEFAULT_ALGO;
-    if (strcmp(name, "BBA0") == 0)
-        return HTTPLIVE_ALGO_BBA0;
-    if (strcmp(name, "CLASSIC") == 0)
-        return HTTPLIVE_ALGO_CLASSIC;
-    return HTTPLIVE_DEFAULT_ALGO;
+        name = def;
+
+    if (strncmp("BBA0", name, strlen("BBA0")) == 0)
+    {
+        namelen = strlen("BBA0");
+        p_sys->algorithm = HTTPLIVE_ALGO_BBA0;
+    }
+    else
+    {
+        p_sys->algorithm = HTTPLIVE_ALGO_CLASSIC;
+        p_sys->algorithm_classic_buffersize = HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE;
+        if (strlen(name) > namelen)
+        {
+            char* next = name+namelen+1;
+            p_sys->algorithm_classic_buffersize = strtol(next, &next, 10);
+        }
+    }
 }
 static char* hls_getAlgorithmName(int algorithm)
 {
@@ -1863,12 +1875,12 @@ static void* hls_Thread(void *p_this)
 
         /* Classic algorithm: Is there a new segment to process? */
         if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC &&
-            ((!p_sys->b_live && p_sys->playback.segment < count - HTTPLIVE_CLASSIC_BUFFERSIZE) ||
+            ((!p_sys->b_live && p_sys->playback.segment < count - p_sys->algorithm_classic_buffersize) ||
             p_sys->download.segment >= count))
         {
             /* wait */
             vlc_mutex_lock(&p_sys->download.lock_wait);
-            while (((p_sys->download.segment - p_sys->playback.segment > HTTPLIVE_CLASSIC_BUFFERSIZE) ||
+            while (((p_sys->download.segment - p_sys->playback.segment > p_sys->algorithm_classic_buffersize) ||
                     (p_sys->download.segment >= count)) &&
                    (p_sys->download.seek == -1))
             {
@@ -2235,9 +2247,7 @@ static int Open(vlc_object_t *p_this)
     if (!isHTTPLiveStreaming(s))
         return VLC_EGENERIC;
 
-    int algorithm = hls_getAlgorithmId(getenv("HTTPLIVE_ALGORITHM"));
-
-    msg_Info(p_this, "HTTP Live Streaming (%s), using %s algorithm", s->psz_path, hls_getAlgorithmName(algorithm));
+    msg_Info(p_this, "HTTP Live Streaming (%s)", s->psz_path);
 
     /* Initialize crypto bit */
     vlc_gcrypt_init();
@@ -2265,6 +2275,8 @@ static int Open(vlc_object_t *p_this)
     free(s->psz_path);
     s->psz_path = new_path;
 
+    hls_setAlgorithm(p_sys, getenv("HTTPLIVE_ALGORITHM"));
+    msg_Info(p_this, "Using %s algorithm", hls_getAlgorithmName(p_sys->algorithm));
     p_sys->bandwidth = 0;
     p_sys->avg_bandwidth = 0;
     p_sys->b_live = true;
@@ -2275,7 +2287,6 @@ static int Open(vlc_object_t *p_this)
     p_sys->download.total_seconds = 0;
     p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
-    p_sys->algorithm = algorithm;
     p_sys->last_read_timestamp = -1;
 
     p_sys->hls_stream = vlc_array_new();
