@@ -68,6 +68,7 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_BBA1 2
 
 #define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
+#define HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR 10 /* out of 10 */
 #define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
 
 #define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
@@ -184,6 +185,7 @@ struct stream_sys_t
 
     int algorithm;
     int algorithm_classic_buffersize;
+    int algorithm_classic_dampingfactor;
     long last_read_timestamp;
 };
 
@@ -252,10 +254,13 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
     {
         p_sys->algorithm = HTTPLIVE_ALGO_CLASSIC;
         p_sys->algorithm_classic_buffersize = HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE;
+        p_sys->algorithm_classic_dampingfactor = HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR;
         if (strlen(name) > namelen)
         {
-            char* next = name+namelen+1;
-            p_sys->algorithm_classic_buffersize = strtol(next, &next, 10);
+            char* next = name+namelen;
+            p_sys->algorithm_classic_buffersize = strtol(next+1, &next, 10);
+            if (*next == '-')
+                p_sys->algorithm_classic_dampingfactor = strtol(next+1, &next, 10);
         }
     }
 }
@@ -1922,6 +1927,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
 
     uint64_t bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
     p_sys->bandwidth = bw;
+    bw = bw * p_sys->algorithm_classic_dampingfactor / 10;
     if (p_sys->avg_bandwidth == 0)
         p_sys->avg_bandwidth = bw;
     else
