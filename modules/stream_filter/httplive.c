@@ -65,6 +65,7 @@ vlc_module_end()
 #define PLAYBACK_DELAY 1000 /* milliseconds. not really scientific */
 #define HTTPLIVE_ALGO_CLASSIC 0
 #define HTTPLIVE_ALGO_BBA0 1
+#define HTTPLIVE_ALGO_BBA1 2
 
 #define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
 #define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
@@ -73,12 +74,16 @@ vlc_module_end()
 #define HTTPLIVE_BBA0_CUSHION 126
 #define HTTPLIVE_BBA0_BUFFER_SIZE 240
 
+#define HTTPLIVE_BBA1_X 480
+#define HTTPLIVE_BBA1_BUFFER_SIZE 240
+
 #define AES_BLOCK_SIZE 16 /* Only support AES-128 */
 typedef struct segment_s
 {
     int         sequence;   /* unique sequence number */
     int         duration;   /* segment duration (seconds) */
     uint64_t    size;       /* segment size in bytes */
+    uint64_t    real_size;  /* segment size in bytes, the protocol said */
     uint64_t    bandwidth;  /* bandwidth usage of segments (bits per second)*/
 
     char        *url;
@@ -224,18 +229,24 @@ static bool isBuffering(stream_sys_t *p_sys)
 }
 static uint64_t BBA0_f(stream_sys_t *p_sys);
 static int BBA0(stream_sys_t *p_sys);
+static int BBA1(stream_sys_t *p_sys);
 
 static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
 {
     char* def = "classic";
-    int namelen = strlen(def);
+    size_t namelen = strlen(def);
     if (name == NULL)
         name = def;
 
-    if (strncmp("BBA0", name, strlen("BBA0")) == 0)
+    if (strncmp("BBA0", name, 4) == 0)
     {
-        namelen = strlen("BBA0");
+        namelen = 4;
         p_sys->algorithm = HTTPLIVE_ALGO_BBA0;
+    }
+    else if (strncmp("BBA1", name, 4) == 0)
+    {
+        namelen = 4;
+        p_sys->algorithm = HTTPLIVE_ALGO_BBA1;
     }
     else
     {
@@ -250,9 +261,11 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
 }
 static char* hls_getAlgorithmName(int algorithm)
 {
-    char* algorithmName = "classic";
+    const char* algorithmName = "classic";
     if (algorithm == HTTPLIVE_ALGO_BBA0)
         algorithmName = "bba0";
+    else if (algorithm == HTTPLIVE_ALGO_BBA1)
+        algorithmName = "bba1";
 
     return algorithmName;
 }
@@ -296,7 +309,18 @@ static void hls_stringAppend(char *str, int number)
 
 static uint64_t hls_GetStreamBandwidth(stream_sys_t *p_sys, int stream_index)
 {
-  return hls_Get(p_sys->hls_stream, stream_index)->bandwidth;
+    return hls_Get(p_sys->hls_stream, stream_index)->bandwidth;
+}
+
+static int hls_BufferBased(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
+{
+    switch (p_sys->algorithm)
+    {
+        case HTTPLIVE_ALGO_BBA1:
+            return BBA1(p_sys);
+        default:
+            return BBA0(p_sys);
+    }
 }
 
 // BBA0
@@ -357,6 +381,62 @@ static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicit
         return stream_over_calculated_rate;
 
     return prev_stream;
+}
+
+//BBA1
+static int BBA1_reservoir(stream_sys_t *p_sys)
+{
+    int d_readable;
+    int reservoir = 0;
+    hls_stream_t *hls = hls_Get(p_sys->hls_stream, 0); //lowest bitrate
+
+    int read_ptr = p_sys->playback.segment;
+    while (reservoir < HTTPLIVE_BBA1_X)
+    {
+        segment_t *read_segment = segment_GetSegment(hls, read_ptr);
+        if (read_segment == NULL) break;
+        reservoir += read_segment->duration;
+        read_ptr++;
+    }
+    d_readable = reservoir;
+    printf("BBA1_readable: %d\n", reservoir);
+
+    double total_dl_time = 0;
+    int dl_ptr = p_sys->download.segment;
+    while (true)
+    {
+        segment_t *dl_segment = segment_GetSegment(hls, dl_ptr);
+        if (dl_segment == NULL) break;
+
+        if (dl_segment->real_size == 0)
+            return -1; //BBA1 not supported :'(
+
+        double dl_time = 8.0 * dl_segment->real_size / hls->bandwidth;
+        total_dl_time += dl_time;
+        if (total_dl_time > (double)HTTPLIVE_BBA1_X)
+            break;
+        reservoir -= dl_segment->duration;
+        printf("Segment %d, size: %"PRIu64", playing: %d, downloading: %f\n", dl_ptr, dl_segment->real_size, dl_segment->duration, dl_time);
+        dl_ptr++;
+    }
+
+    printf("BBA1 readable: %d, dl: %d, reservoir: %d\n", d_readable, d_readable-reservoir, reservoir);
+    if (reservoir > 140)
+        return 140;
+    if (reservoir < 8)
+        return 8;
+    return reservoir;
+}
+
+static int BBA1(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
+{
+    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA1_BUFFER_SIZE)
+        return -1;
+
+    int reservoir = BBA1_reservoir(p_sys);
+    if (reservoir == -1)
+        return 0;
+    return 0;
 }
 
 /****************************************************************************
@@ -560,7 +640,7 @@ static uint64_t hls_GetStreamSize(hls_stream_t *hls)
 }
 
 /* Segment */
-static segment_t *segment_New(hls_stream_t* hls, const int duration, const char *uri)
+static segment_t *segment_New(hls_stream_t* hls, const int duration, uint64_t size, const char *uri)
 {
     segment_t *segment = (segment_t *)malloc(sizeof(segment_t));
     if (segment == NULL)
@@ -568,6 +648,7 @@ static segment_t *segment_New(hls_stream_t* hls, const int duration, const char 
 
     segment->duration = duration; /* seconds */
     segment->size = 0; /* bytes */
+    segment->real_size = size;
     segment->sequence = 0;
     segment->bandwidth = 0;
     segment->url = strdup(uri);
@@ -864,7 +945,21 @@ static int parse_SegmentInformation(hls_stream_t *hls, char *p_read, int *durati
     return VLC_SUCCESS;
 }
 
-static int parse_AddSegment(hls_stream_t *hls, const int duration, const char *uri)
+static int parse_SegmentSize(hls_stream_t *hls, char *p_read, uint64_t *size)
+{
+    assert(hls);
+    assert(p_read);
+
+    int ret = sscanf(p_read, "#EXT-X-SIZE:%"PRIu64"", size);
+    if (ret != 1)
+    {
+        //don't have duration, BBA-1+ will break
+    }
+
+    return VLC_SUCCESS;
+}
+
+static int parse_AddSegment(hls_stream_t *hls, const int duration, uint64_t size, const char *uri)
 {
     assert(hls);
     assert(uri);
@@ -874,7 +969,7 @@ static int parse_AddSegment(hls_stream_t *hls, const int duration, const char *u
 
     char *psz_uri = relative_URI(hls->url, uri);
 
-    segment_t *segment = segment_New(hls, duration, psz_uri ? psz_uri : uri);
+    segment_t *segment = segment_New(hls, duration, size, psz_uri ? psz_uri : uri);
     if (segment)
         segment->sequence = hls->sequence + vlc_array_count(hls->segments) - 1;
     free(psz_uri);
@@ -1334,6 +1429,7 @@ static int parse_M3U8(stream_t *s, vlc_array_t *streams, uint8_t *buffer, const 
         /* */
         bool media_sequence_loaded = false;
         int segment_duration = -1;
+        uint64_t segment_size = 0;
         do
         {
             /* Next line */
@@ -1344,6 +1440,8 @@ static int parse_M3U8(stream_t *s, vlc_array_t *streams, uint8_t *buffer, const 
 
             if (strncmp(line, "#EXTINF", 7) == 0)
                 err = parse_SegmentInformation(hls, line, &segment_duration);
+            else if (strncmp(line, "#EXT-X-SIZE", 10) == 0)
+                err = parse_SegmentSize(hls, line, &segment_size);
             else if (strncmp(line, "#EXT-X-TARGETDURATION", 21) == 0)
                 err = parse_TargetDuration(s, hls, line);
             else if (strncmp(line, "#EXT-X-MEDIA-SEQUENCE", 21) == 0)
@@ -1370,8 +1468,9 @@ static int parse_M3U8(stream_t *s, vlc_array_t *streams, uint8_t *buffer, const 
                 err = parse_EndList(s, hls);
             else if ((strncmp(line, "#", 1) != 0) && (*line != '\0') )
             {
-                err = parse_AddSegment(hls, segment_duration, line);
+                err = parse_AddSegment(hls, segment_duration, segment_size, line);
                 segment_duration = -1; /* reset duration */
+                segment_size = 0; /* reset size */
             }
 
             free(line);
@@ -1852,26 +1951,27 @@ static void* hls_Thread(void *p_this)
 
     while (vlc_object_alive(s))
     {
-        if (p_sys->algorithm != HTTPLIVE_ALGO_CLASSIC)
-        {
-            int next_stream;
-            vlc_mutex_lock(&p_sys->download.lock_wait);
-            while ((next_stream = BBA0(p_sys)) == -1) // buffer full
-            {
-                vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
-                if (!vlc_object_alive(s))
-                    break;
-            }
-            p_sys->download.stream = next_stream;
-            vlc_mutex_unlock(&p_sys->download.lock_wait);
-        }
-
         hls_stream_t *hls = hls_Get(p_sys->hls_stream, p_sys->download.stream);
         assert(hls);
 
         vlc_mutex_lock(&hls->lock);
         int count = vlc_array_count(hls->segments);
         vlc_mutex_unlock(&hls->lock);
+
+        if (p_sys->algorithm != HTTPLIVE_ALGO_CLASSIC)
+        {
+            int next_stream;
+            vlc_mutex_lock(&p_sys->download.lock_wait);
+            while ((next_stream = hls_BufferBased(p_sys)) == -1 || p_sys->download.segment >= count) // buffer full
+            {
+                vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
+                if (!vlc_object_alive(s))
+                    break;
+            }
+            p_sys->download.stream = next_stream;
+            hls = hls_Get(p_sys->hls_stream, p_sys->download.stream);
+            vlc_mutex_unlock(&p_sys->download.lock_wait);
+        }
 
         /* Classic algorithm: Is there a new segment to process? */
         if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC &&
