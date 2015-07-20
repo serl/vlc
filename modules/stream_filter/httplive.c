@@ -67,8 +67,8 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_BBA0 1
 #define HTTPLIVE_ALGO_BBA1 2
 
-#define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
-#define HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR 10 /* out of 10 */
+#define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 2 /* in segments */
+#define HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR 8 /* out of 10 */
 #define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
 
 #define HTTPLIVE_BBA0_RESERVOIR 90 /* in seconds */
@@ -1936,14 +1936,10 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     if (p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC && p_sys->b_meta && (hls->bandwidth != bw))
     {
         int newstream = BandwidthAdaptation(s, hls->id, &bw);
-
-        /* FIXME: we need an average here */
-        if ((newstream >= 0) && (newstream != *cur_stream))
-        {
-            msg_Dbg(s, "detected %s bandwidth (%"PRIu64") stream",
-                     (bw >= hls->bandwidth) ? "faster" : "lower", bw);
-            *cur_stream = newstream;
-        }
+        if (newstream > *cur_stream)
+            (*cur_stream)++;
+        else if (newstream < *cur_stream)
+            (*cur_stream)--;
     }
     return VLC_SUCCESS;
 }
@@ -2431,7 +2427,7 @@ static int Open(vlc_object_t *p_this)
 
     hls_printInitInfo(p_sys);
     /* Choose first HLS stream to start with */
-    int current = p_sys->playback.stream = p_sys->algorithm == HTTPLIVE_ALGO_CLASSIC ? p_sys->hls_stream->i_count-1 : 0;
+    int current = p_sys->playback.stream = 0;
     p_sys->playback.segment = p_sys->download.segment = ChooseSegment(s, current);
 
     /* manage encryption key if needed */
