@@ -67,7 +67,7 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_BBA0 1
 #define HTTPLIVE_ALGO_BBA1 2
 
-#define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 2 /* in segments */
+#define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
 #define HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR 8 /* out of 10 */
 #define HTTPLIVE_CLASSIC_PAST_WEIGHT 8 /* out of 10 */
 
@@ -143,7 +143,7 @@ struct stream_sys_t
 
         bool active;
         long total_seconds;
-        char composition[200]; //segfault, I see you
+        char composition[500]; //segfault, I see you
     } download;
 
     /* Playback */
