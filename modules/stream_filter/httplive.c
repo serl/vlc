@@ -391,20 +391,8 @@ static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicit
 //BBA1
 static int BBA1_reservoir(stream_sys_t *p_sys)
 {
-    int d_readable;
-    int reservoir = 0;
+    int can_read = 0, can_download = 0;
     hls_stream_t *hls = hls_Get(p_sys->hls_stream, 0); //lowest bitrate
-
-    int read_ptr = p_sys->playback.segment;
-    while (reservoir < HTTPLIVE_BBA1_X)
-    {
-        segment_t *read_segment = segment_GetSegment(hls, read_ptr);
-        if (read_segment == NULL) break;
-        reservoir += read_segment->duration;
-        read_ptr++;
-    }
-    d_readable = reservoir;
-    printf("BBA1_readable: %d\n", reservoir);
 
     double total_dl_time = 0;
     int dl_ptr = p_sys->download.segment;
@@ -417,15 +405,25 @@ static int BBA1_reservoir(stream_sys_t *p_sys)
             return -1; //BBA1 not supported :'(
 
         double dl_time = 8.0 * dl_segment->real_size / hls->bandwidth;
-        total_dl_time += dl_time;
-        if (total_dl_time > (double)HTTPLIVE_BBA1_X)
+        if (total_dl_time + dl_time > (double)HTTPLIVE_BBA1_X)
             break;
-        reservoir -= dl_segment->duration;
-        printf("Segment %d, size: %"PRIu64", playing: %d, downloading: %f\n", dl_ptr, dl_segment->real_size, dl_segment->duration, dl_time);
+        total_dl_time += dl_time;
+        can_download += dl_segment->duration;
+        //printf("Segment %d, size: %"PRIu64", playing: %d, downloading: %f\n", dl_ptr, dl_segment->real_size, dl_segment->duration, dl_time);
         dl_ptr++;
     }
 
-    printf("BBA1 readable: %d, dl: %d, reservoir: %d\n", d_readable, d_readable-reservoir, reservoir);
+    int read_ptr = p_sys->playback.segment;
+    while (can_read < total_dl_time)
+    {
+        segment_t *read_segment = segment_GetSegment(hls, read_ptr);
+        if (read_segment == NULL) break;
+        can_read += read_segment->duration;
+        read_ptr++;
+    }
+
+    int reservoir = can_read - can_download;
+    printf("BBA1 readable: %d, dl: %d, dl_time: %.2f, reservoir: %d\n", can_read, can_download, total_dl_time, reservoir);
     if (reservoir > 140)
         return 140;
     if (reservoir < 8)
@@ -1962,9 +1960,9 @@ static void* hls_Thread(void *p_this)
 
         if (p_sys->algorithm != HTTPLIVE_ALGO_CLASSIC)
         {
-            int next_stream;
+            int next_stream = p_sys->download.stream;
             vlc_mutex_lock(&p_sys->download.lock_wait);
-            while ((next_stream = hls_BufferBased(p_sys)) == -1 || p_sys->download.segment >= count) // buffer full
+            while (p_sys->download.segment >= count || (next_stream = hls_BufferBased(p_sys)) == -1) // buffer full
             {
                 vlc_cond_wait(&p_sys->download.wait, &p_sys->download.lock_wait);
                 if (!vlc_object_alive(s))
