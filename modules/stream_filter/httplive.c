@@ -342,7 +342,6 @@ static uint64_t BBA0_f(stream_sys_t *p_sys)
         return rMax;
     int slope = (rMax-rMin) / HTTPLIVE_BBA0_CUSHION;
     return rMin + slope * (p_sys->playback.buffer_size - HTTPLIVE_BBA0_RESERVOIR);
-    //printf("%"PRIu64", %"PRIu64"");
 }
 static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
 {
@@ -1936,7 +1935,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
         int newstream = BandwidthAdaptation(s, hls->id, &bw);
         if (newstream > *cur_stream)
             (*cur_stream)++;
-        else if (newstream < *cur_stream)
+        else if (newstream < *cur_stream && newstream >= 0)
             (*cur_stream)--;
     }
     return VLC_SUCCESS;
@@ -2113,7 +2112,7 @@ static int Prefetch(stream_t *s, int *current)
         msg_Warn(s, "Only 1 segment available to prefetch in live stream; may stall");
 
     /* Download ~10s worth of segments of this HLS stream if they exist */
-    unsigned segment_amount = (0.5f + 10/hls->duration);
+    int segment_amount = 0.5f + 10/hls->duration;
     for (int i = 0; i < __MIN(vlc_array_count(hls->segments), segment_amount); i++)
     {
         segment_t *segment = segment_GetSegment(hls, p_sys->download.segment);
