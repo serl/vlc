@@ -2663,7 +2663,9 @@ static ssize_t hls_Read(stream_t *s, uint8_t *p_read, unsigned int i_read)
         if (isBuffering(p_sys))
         { //we're going to rebuffer now!
             p_sys->last_read_timestamp = -1;
-            p_sys->playback.current_time += PLAYBACK_DELAY;
+            p_sys->playback.buffer_size = 0;
+            hls_stream_t *hls = hls_Get(p_sys->hls_stream, 0);
+            p_sys->playback.current_time = hls->duration + p_sys->download.total_seconds * 1000;
             hls_printStatus(p_sys);
         }
 
