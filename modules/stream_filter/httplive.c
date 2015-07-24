@@ -76,6 +76,7 @@ vlc_module_end()
 #define HTTPLIVE_BBA0_BUFFER_SIZE 240
 
 #define HTTPLIVE_BBA1_X 480
+#define HTTPLIVE_BBA1_CUSHION 126
 #define HTTPLIVE_BBA1_BUFFER_SIZE 240
 
 #define AES_BLOCK_SIZE 16 /* Only support AES-128 */
@@ -155,6 +156,7 @@ struct stream_sys_t
 
         long current_time;      /* milliseconds */
         long buffer_size;       /* seconds */
+        long read_segments_time;/* milliseconds */
     } playback;
 
     /* Playlist */
@@ -229,9 +231,11 @@ static bool isBuffering(stream_sys_t *p_sys)
     vlc_mutex_unlock(&hls->lock);
     return p_sys->download.segment < count && p_sys->playback.segment == p_sys->download.segment;
 }
-static uint64_t BBA0_f(stream_sys_t *p_sys);
+static uint64_t BBA_f(stream_sys_t *p_sys, int cushion_size, int reservoir_size);
 static int BBA0(stream_sys_t *p_sys);
 static int BBA1(stream_sys_t *p_sys);
+static int BBA1_reservoir(stream_sys_t *p_sys);
+static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index);
 
 static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
 {
@@ -303,7 +307,17 @@ static void hls_printStatus(stream_sys_t *p_sys)
 
     printf("T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64", AVG BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
       (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->avg_bandwidth, p_sys->download.composition);
-    //printf("POINT;%ld;%"PRIu64";%d\n", p_sys->playback.buffer_size, BBA0_f(p_sys), BBA0(p_sys));
+
+    if (p_sys->algorithm == HTTPLIVE_ALGO_BBA1)
+    {
+        //BBA1 debug
+        printf("BBA1_debug. buffer: %ld, reservoir: %d, selected_stream: %d, instant rates:", p_sys->playback.buffer_size, BBA1_reservoir(p_sys), BBA1(p_sys));
+        int count = vlc_array_count(p_sys->hls_stream);
+        for (int n = 0; n < count; n++)
+            printf(" %"PRIu64"", hls_GetNextSegmentRealBandwidth(p_sys, n));
+        printf("\n");
+    }
+
     fflush(stdout);
 }
 
@@ -315,6 +329,18 @@ static void hls_stringAppend(char *str, int number)
 static uint64_t hls_GetStreamBandwidth(stream_sys_t *p_sys, int stream_index)
 {
     return hls_Get(p_sys->hls_stream, stream_index)->bandwidth;
+}
+static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index)
+{
+    hls_stream_t *hls = hls_Get(p_sys->hls_stream, stream_index);
+    if (hls == NULL)
+        return 0;
+    segment_t *segment = segment_GetSegment(hls, p_sys->download.segment);
+    if (segment == NULL)
+        return 0;
+    if (segment->duration <= 0)
+        return 8 * segment->real_size; // as if duration=1
+    return 8 * segment->real_size / segment->duration;
 }
 
 static int hls_BufferBased(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
@@ -329,19 +355,15 @@ static int hls_BufferBased(stream_sys_t *p_sys/*, int progid - not considered fo
 }
 
 // BBA0
-static uint64_t BBA0_f(stream_sys_t *p_sys)
+static uint64_t BBA_f(stream_sys_t *p_sys, int cushion_size, int reservoir_size)
 {
     hls_stream_t *hlsMax = hls_GetLast(p_sys->hls_stream);
     hls_stream_t *hlsMin = hls_GetFirst(p_sys->hls_stream);
     uint64_t rMax = hlsMax->bandwidth;
     uint64_t rMin = hlsMin->bandwidth;
 
-    if (p_sys->playback.buffer_size < HTTPLIVE_BBA0_RESERVOIR)
-        return rMin;
-    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA0_RESERVOIR + HTTPLIVE_BBA0_CUSHION)
-        return rMax;
-    int slope = (rMax-rMin) / HTTPLIVE_BBA0_CUSHION;
-    return rMin + slope * (p_sys->playback.buffer_size - HTTPLIVE_BBA0_RESERVOIR);
+    int slope = (rMax-rMin) / cushion_size;
+    return rMin + slope * (p_sys->playback.buffer_size - reservoir_size);
 }
 static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
 {
@@ -359,7 +381,7 @@ static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicit
         return max_stream;
 
     // now serious business!
-    uint64_t calculated_rate = BBA0_f(p_sys);
+    uint64_t calculated_rate = BBA_f(p_sys, HTTPLIVE_BBA0_CUSHION, HTTPLIVE_BBA0_RESERVOIR);
     int prev_stream = p_sys->download.stream;
     int plus_stream = max_stream;
     if (prev_stream != max_stream)
@@ -422,7 +444,7 @@ static int BBA1_reservoir(stream_sys_t *p_sys)
     }
 
     int reservoir = can_read - can_download;
-    printf("BBA1 readable: %d, dl: %d, dl_time: %.2f, reservoir: %d\n", can_read, can_download, total_dl_time, reservoir);
+    //printf("BBA1 readable: %d, dl: %d, dl_time: %.2f, reservoir: %d\n", can_read, can_download, total_dl_time, reservoir);
     if (reservoir > 140)
         return 140;
     if (reservoir < 8)
@@ -438,7 +460,44 @@ static int BBA1(stream_sys_t *p_sys/*, int progid - not considered for simplicit
     int reservoir = BBA1_reservoir(p_sys);
     if (reservoir == -1)
         return 0;
-    return 0;
+
+    int count = vlc_array_count(p_sys->hls_stream);
+    int max_stream = count-1;
+
+    // simple cases...
+    if (p_sys->playback.buffer_size <= reservoir)
+        return 0;
+    if (p_sys->playback.buffer_size >= reservoir + HTTPLIVE_BBA1_CUSHION)
+        return max_stream;
+
+    // now serious business!
+    uint64_t calculated_rate = BBA_f(p_sys, HTTPLIVE_BBA1_CUSHION, reservoir);
+    int prev_stream = p_sys->download.stream;
+
+    int plus_stream = prev_stream + 1;
+    if (plus_stream > max_stream)
+        plus_stream = max_stream;
+    int minus_stream = prev_stream - 1;
+    if (minus_stream < 0)
+        minus_stream = 0;
+
+    int stream_over_calculated_rate = max_stream;
+    int stream_under_calculated_rate = 0;
+    for (int n = 0; n < count; n++)
+    {
+        uint64_t bw = hls_GetNextSegmentRealBandwidth(p_sys, n);
+        if (bw > calculated_rate && bw < hls_GetNextSegmentRealBandwidth(p_sys, stream_over_calculated_rate))
+            stream_over_calculated_rate = n;
+        if (bw < calculated_rate && bw > hls_GetNextSegmentRealBandwidth(p_sys, stream_under_calculated_rate))
+            stream_under_calculated_rate = n;
+    }
+
+    if (calculated_rate >= hls_GetNextSegmentRealBandwidth(p_sys, plus_stream))
+        return stream_under_calculated_rate;
+    if (calculated_rate <= hls_GetNextSegmentRealBandwidth(p_sys, minus_stream))
+        return stream_over_calculated_rate;
+
+    return prev_stream;
 }
 
 /****************************************************************************
@@ -2384,6 +2443,7 @@ static int Open(vlc_object_t *p_this)
     p_sys->download.active = false;
     p_sys->download.composition[0] = '\0';
     p_sys->download.total_seconds = 0;
+    p_sys->playback.read_segments_time = 0;
     p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
     p_sys->last_read_timestamp = -1;
@@ -2691,6 +2751,8 @@ static ssize_t hls_Read(stream_t *s, uint8_t *p_read, unsigned int i_read)
 
             /* signal download thread */
             vlc_mutex_lock(&p_sys->download.lock_wait);
+            p_sys->playback.read_segments_time += segment->duration * 1000;
+            p_sys->playback.current_time = p_sys->playback.read_segments_time;
             p_sys->playback.segment++;
             vlc_cond_signal(&p_sys->download.wait);
             vlc_mutex_unlock(&p_sys->download.lock_wait);
