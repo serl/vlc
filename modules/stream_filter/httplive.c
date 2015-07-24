@@ -45,6 +45,8 @@
 
 #include <time.h>
 
+#include <curl/curl.h>
+
 /*****************************************************************************
  * Module descriptor
  *****************************************************************************/
@@ -122,6 +124,7 @@ typedef struct hls_stream_s
 
 struct stream_sys_t
 {
+    CURL         *curl;
     char         *m3u8;         /* M3U8 url */
     vlc_thread_t  reload;       /* HLS m3u8 reload thread */
     vlc_thread_t  thread;       /* HLS segment download thread */
@@ -217,6 +220,11 @@ static hls_stream_t *hls_GetLast(vlc_array_t *hls_stream);
 /****************************************************************************
  * My functions
  ****************************************************************************/
+static void hls_curl_cleanup(stream_sys_t *p_sys)
+{
+    if (p_sys->curl != NULL)
+        curl_easy_cleanup(p_sys->curl);
+}
 static time_t getTime()
 {
     struct timespec current_timestamp;
@@ -1950,13 +1958,30 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     p_sys->download.active = true;
     hls_printStatus(p_sys);
     mtime_t start = mdate();
-    if (hls_Download(s, segment) != VLC_SUCCESS)
+    if (p_sys->curl == NULL)
     {
-        msg_Err(s, "downloading segment %d from stream %d failed",
-                    segment->sequence, *cur_stream);
-        p_sys->download.active = false;
-        vlc_mutex_unlock(&segment->lock);
-        return VLC_EGENERIC;
+        if (hls_Download(s, segment) != VLC_SUCCESS)
+        {
+            msg_Err(s, "downloading segment %d from stream %d failed",
+                        segment->sequence, *cur_stream);
+            p_sys->download.active = false;
+            vlc_mutex_unlock(&segment->lock);
+            return VLC_EGENERIC;
+        }
+    }
+    else
+    {
+        curl_easy_setopt(p_sys->curl, CURLOPT_URL, segment->url);
+        curl_easy_setopt(p_sys->curl, CURLOPT_WRITEDATA, segment);
+        CURLcode res = curl_easy_perform(p_sys->curl);
+        if (res != CURLE_OK)
+        {
+            msg_Err(s, "downloading segment %d from stream %d failed, curl error: %s",
+                        segment->sequence, *cur_stream, curl_easy_strerror(res));
+            p_sys->download.active = false;
+            vlc_mutex_unlock(&segment->lock);
+            return VLC_EGENERIC;
+        }
     }
     mtime_t duration = mdate() - start;
     p_sys->download.active = false;
@@ -2208,6 +2233,35 @@ static int Prefetch(stream_t *s, int *current)
 /****************************************************************************
  *
  ****************************************************************************/
+size_t hls_curl_Download(char *buffer, size_t size, size_t nmemb, void *segment_ptr)
+{ //this is a http://curl.haxx.se/libcurl/c/CURLOPT_WRITEFUNCTION.html
+    segment_t *segment = (segment_t*)segment_ptr;
+    assert(segment);
+    size_t chunk_size = size * nmemb;
+    if (segment->size == 0)
+    {
+        segment->data = block_Alloc(chunk_size);
+        if (!segment->data)
+            return 0;
+    }
+    else
+    {
+        block_t *p_block = block_Realloc(segment->data, 0, segment->size + chunk_size);
+        if (!p_block) {
+            block_Release(segment->data);
+            segment->data = NULL;
+            return 0;
+        }
+        segment->data = p_block;
+    }
+    //write *buffer at segment->data + segment->size
+    for (size_t i = 0; i < chunk_size; i++)
+        segment->data->p_buffer[i+segment->size] = buffer[i];
+    segment->size += chunk_size;
+    segment->data->i_buffer = segment->size;
+    return chunk_size;
+}
+
 static int hls_Download(stream_t *s, segment_t *segment)
 {
     stream_sys_t *p_sys = s->p_sys;
@@ -2448,10 +2502,26 @@ static int Open(vlc_object_t *p_this)
     p_sys->playback.buffer_size = 0;
     p_sys->last_read_timestamp = -1;
 
+    p_sys->curl = NULL;
+    if (getenv("HTTPLIVE_CURL") != NULL && strcmp(getenv("HTTPLIVE_CURL"), "yes") == 0)
+    {
+        curl_global_init(CURL_GLOBAL_ALL);
+        p_sys->curl = curl_easy_init();
+        if (!p_sys->curl)
+        {
+            free(p_sys->m3u8);
+            free(p_sys);
+            return VLC_ENOMEM;
+        }
+        //curl_easy_setopt(p_sys->curl, CURLOPT_VERBOSE, 1L);
+        curl_easy_setopt(p_sys->curl, CURLOPT_WRITEFUNCTION, hls_curl_Download);
+    }
+
     p_sys->hls_stream = vlc_array_new();
     if (p_sys->hls_stream == NULL)
     {
         free(p_sys->m3u8);
+        hls_curl_cleanup(p_sys);
         free(p_sys);
         return VLC_ENOMEM;
     }
@@ -2552,6 +2622,7 @@ fail:
 
     /* */
     free(p_sys->m3u8);
+    hls_curl_cleanup(p_sys);
     free(p_sys);
     return VLC_EGENERIC;
 }
@@ -2605,6 +2676,7 @@ static void Close(vlc_object_t *p_this)
     free(p_sys->m3u8);
     if (p_sys->peeked)
         block_Release (p_sys->peeked);
+    hls_curl_cleanup(p_sys);
     free(p_sys);
 }
 
