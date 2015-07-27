@@ -247,7 +247,7 @@ static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_
 
 static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
 {
-    char* def = "classic";
+    char* def = (char *)"classic";
     size_t namelen = strlen(def);
     if (name == NULL)
         name = def;
@@ -276,7 +276,7 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
         }
     }
 }
-static char* hls_getAlgorithmName(int algorithm)
+static const char* hls_getAlgorithmName(int algorithm)
 {
     const char* algorithmName = "classic";
     if (algorithm == HTTPLIVE_ALGO_BBA0)
@@ -319,11 +319,21 @@ static void hls_printStatus(stream_sys_t *p_sys)
     if (p_sys->algorithm == HTTPLIVE_ALGO_BBA1)
     {
         //BBA1 debug
-        printf("BBA1_debug. buffer: %ld, reservoir: %d, selected_stream: %d, instant rates:", p_sys->playback.buffer_size, BBA1_reservoir(p_sys), BBA1(p_sys));
+        char* instant_rates = (char*)malloc(sizeof(char));
+        *instant_rates = '\0';
         int count = vlc_array_count(p_sys->hls_stream);
         for (int n = 0; n < count; n++)
-            printf(" %"PRIu64"", hls_GetNextSegmentRealBandwidth(p_sys, n));
-        printf("\n");
+        {
+            char* part_rates = instant_rates;
+            if (asprintf(&instant_rates, "%s %"PRIu64"", part_rates, hls_GetNextSegmentRealBandwidth(p_sys, n)) == -1)
+            {
+                instant_rates = (char*)"memory error";
+                break;
+            }
+            free(part_rates);
+        }
+        printf("BBA1_debug. reservoir: %ds, selected_stream: %d, instant rates:%s\n", BBA1_reservoir(p_sys), BBA1(p_sys), instant_rates);
+        free(instant_rates);
     }
 
     fflush(stdout);
@@ -2233,7 +2243,7 @@ static int Prefetch(stream_t *s, int *current)
 /****************************************************************************
  *
  ****************************************************************************/
-size_t hls_curl_Download(char *buffer, size_t size, size_t nmemb, void *segment_ptr)
+static size_t hls_curl_Download(char *buffer, size_t size, size_t nmemb, void *segment_ptr)
 { //this is a http://curl.haxx.se/libcurl/c/CURLOPT_WRITEFUNCTION.html
     segment_t *segment = (segment_t*)segment_ptr;
     assert(segment);
