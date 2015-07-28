@@ -125,6 +125,7 @@ typedef struct hls_stream_s
 struct stream_sys_t
 {
     CURL         *curl;
+    bool          curl_bw;
     char         *m3u8;         /* M3U8 url */
     vlc_thread_t  reload;       /* HLS m3u8 reload thread */
     vlc_thread_t  thread;       /* HLS segment download thread */
@@ -1967,6 +1968,7 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
 
     p_sys->download.active = true;
     hls_printStatus(p_sys);
+    uint64_t bw = 0;
     mtime_t start = mdate();
     if (p_sys->curl == NULL)
     {
@@ -1992,6 +1994,15 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
             vlc_mutex_unlock(&segment->lock);
             return VLC_EGENERIC;
         }
+
+        double start_transfer_time = 0.0, total_time = 0.0, total_size = 0.0;
+        if (p_sys->curl_bw &&
+            curl_easy_getinfo(p_sys->curl, CURLINFO_STARTTRANSFER_TIME, &start_transfer_time) == CURLE_OK &&
+            curl_easy_getinfo(p_sys->curl, CURLINFO_TOTAL_TIME, &total_time) == CURLE_OK &&
+            curl_easy_getinfo(p_sys->curl, CURLINFO_SIZE_DOWNLOAD, &total_size) == CURLE_OK)
+        {
+            bw = (uint64_t)(8 * total_size / (total_time - start_transfer_time)); /* bits / s */
+        }
     }
     mtime_t duration = mdate() - start;
     p_sys->download.active = false;
@@ -2016,7 +2027,8 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     msg_Dbg(s, "downloaded segment %d from stream %d",
                 segment->sequence, *cur_stream);
 
-    uint64_t bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
+    if (bw == 0)
+        bw = segment->size * 8 * 1000000 / __MAX(1, duration); /* bits / s */
     p_sys->bandwidth = bw;
     bw = bw * p_sys->algorithm_classic_dampingfactor / 10;
     if (p_sys->avg_bandwidth == 0)
@@ -2511,10 +2523,12 @@ static int Open(vlc_object_t *p_this)
     p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
     p_sys->last_read_timestamp = -1;
+    p_sys->curl_bw = false;
 
     p_sys->curl = NULL;
-    if (getenv("HTTPLIVE_CURL") != NULL && strcmp(getenv("HTTPLIVE_CURL"), "yes") == 0)
+    if (getenv("HTTPLIVE_CURL") != NULL && (strcmp(getenv("HTTPLIVE_CURL"), "yes") == 0 || strcmp(getenv("HTTPLIVE_CURL"), "bandwidth") == 0))
     {
+        msg_Info(p_this, "Using keep-alive connections thanks to libcurl");
         curl_global_init(CURL_GLOBAL_ALL);
         p_sys->curl = curl_easy_init();
         if (!p_sys->curl)
@@ -2523,8 +2537,12 @@ static int Open(vlc_object_t *p_this)
             free(p_sys);
             return VLC_ENOMEM;
         }
-        //curl_easy_setopt(p_sys->curl, CURLOPT_VERBOSE, 1L);
         curl_easy_setopt(p_sys->curl, CURLOPT_WRITEFUNCTION, hls_curl_Download);
+        if (strcmp(getenv("HTTPLIVE_CURL"), "bandwidth") == 0)
+        {
+            p_sys->curl_bw = true;
+            msg_Info(p_this, "Using libcurl bandwidth estimation");
+        }
     }
 
     p_sys->hls_stream = vlc_array_new();
