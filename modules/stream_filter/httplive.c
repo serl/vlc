@@ -307,6 +307,7 @@ static void hls_printStatus(stream_sys_t *p_sys)
     // once a second is enough
     int current_second = p_sys->playback.current_time / 1000;
     if (last_second == current_second && last_downloaded == p_sys->download.segment && was_downloading == p_sys->download.active) return;
+    char* log_line;
     last_second = current_second;
     last_downloaded = p_sys->download.segment;
     was_downloading = p_sys->download.active;
@@ -314,8 +315,9 @@ static void hls_printStatus(stream_sys_t *p_sys)
     struct timespec curtime;
     clock_gettime(CLOCK_REALTIME, &curtime);
 
-    printf("T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64", AVG BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
-      (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->avg_bandwidth, p_sys->download.composition);
+    if (asprintf(&log_line, "T: %lld.%.9ld, PLAYING TIME: %ldms, BUFFER: %lds (%d), PLAY STR/SEG (buffering): %d/%d (%d), DOWNLOAD STR/SEG (active): %d/%d (%d), BANDWIDTH: %"PRIu64", AVG BANDWIDTH: %"PRIu64"\nDOWNLOAD COMPOSITION: %s\n",
+      (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->avg_bandwidth, p_sys->download.composition) == -1)
+    { log_line = (char*)"memory error"; }
 
     if (p_sys->algorithm == HTTPLIVE_ALGO_BBA1)
     {
@@ -333,11 +335,19 @@ static void hls_printStatus(stream_sys_t *p_sys)
             }
             free(part_rates);
         }
-        printf("BBA1_debug. reservoir: %ds, selected_stream: %d, instant rates:%s\n", BBA1_reservoir(p_sys), BBA1(p_sys), instant_rates);
+        int reservoir = BBA1_reservoir(p_sys);
+        uint64_t calculated_rate = BBA_f(p_sys, HTTPLIVE_BBA1_CUSHION, reservoir);
+        char* prev_log_line = log_line;
+        if (asprintf(&log_line, "%sBBA1_debug. reservoir: %ds, calculated rate: %"PRIu64", selected_stream: %d, instant rates:%s\n", prev_log_line, reservoir, calculated_rate, BBA1(p_sys), instant_rates) == -1)
+        { log_line = (char*)"memory error"; }
+        else
+        { free(prev_log_line); }
         free(instant_rates);
     }
 
+    printf("%s", log_line);
     fflush(stdout);
+    free(log_line);
 }
 
 static void hls_stringAppend(char *str, int number)
@@ -381,8 +391,11 @@ static uint64_t BBA_f(stream_sys_t *p_sys, int cushion_size, int reservoir_size)
     uint64_t rMax = hlsMax->bandwidth;
     uint64_t rMin = hlsMin->bandwidth;
 
-    int slope = (rMax-rMin) / cushion_size;
-    return rMin + slope * (p_sys->playback.buffer_size - reservoir_size);
+    long double slope = (long double)(rMax-rMin) / cushion_size;
+    long double value = (long double)rMin + slope * (p_sys->playback.buffer_size - reservoir_size);
+    if (value < 0)
+        return 0;
+    return (uint64_t)value;
 }
 static int BBA0(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
 {
@@ -464,10 +477,12 @@ static int BBA1_reservoir(stream_sys_t *p_sys)
 
     int reservoir = can_read - can_download;
     //printf("BBA1 readable: %d, dl: %d, dl_time: %.2f, reservoir: %d\n", can_read, can_download, total_dl_time, reservoir);
-    if (reservoir > 140)
-        return 140;
-    if (reservoir < 8)
-        return 8;
+    int lowerbound = hls->duration * 2;
+    int upperbound = hls->duration * 35;
+    if (reservoir > upperbound)
+        return upperbound;
+    if (reservoir < lowerbound)
+        return lowerbound;
     return reservoir;
 }
 
