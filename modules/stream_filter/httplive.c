@@ -526,11 +526,16 @@ static int BBA1(stream_sys_t *p_sys/*, int progid - not considered for simplicit
             stream_under_calculated_rate = n;
     }
 
+    int next_stream = prev_stream;
     if (calculated_rate >= hls_GetNextSegmentRealBandwidth(p_sys, plus_stream))
-        return stream_under_calculated_rate;
-    if (calculated_rate <= hls_GetNextSegmentRealBandwidth(p_sys, minus_stream))
-        return stream_over_calculated_rate;
+        next_stream = stream_under_calculated_rate;
+    else if (calculated_rate <= hls_GetNextSegmentRealBandwidth(p_sys, minus_stream))
+        next_stream = stream_over_calculated_rate;
 
+    if (next_stream > prev_stream)
+        return prev_stream+1;
+    else if (next_stream < prev_stream)
+        return prev_stream-1;
     return prev_stream;
 }
 
