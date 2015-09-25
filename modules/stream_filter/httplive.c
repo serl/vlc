@@ -68,6 +68,7 @@ vlc_module_end()
 #define HTTPLIVE_ALGO_CLASSIC 0
 #define HTTPLIVE_ALGO_BBA0 1
 #define HTTPLIVE_ALGO_BBA1 2
+#define HTTPLIVE_ALGO_BBA2 3
 
 #define HTTPLIVE_CLASSIC_DEFAULT_BUFFERSIZE 24 /* in segments */
 #define HTTPLIVE_CLASSIC_DEFAULT_DAMPINGFACTOR 8 /* out of 10 */
@@ -160,6 +161,8 @@ struct stream_sys_t
 
         long current_time;      /* milliseconds */
         long buffer_size;       /* seconds */
+        long buffer_size_after_last_download; /* seconds */
+        bool buffer_decreasing;
         long read_segments_time;/* milliseconds */
     } playback;
 
@@ -192,6 +195,7 @@ struct stream_sys_t
     int algorithm;
     int algorithm_classic_buffersize;
     int algorithm_classic_dampingfactor;
+    bool algorithm_bba2_startup;
     long last_read_timestamp;
 };
 
@@ -244,6 +248,9 @@ static uint64_t BBA_f(stream_sys_t *p_sys, int cushion_size, int reservoir_size)
 static int BBA0(stream_sys_t *p_sys);
 static int BBA1(stream_sys_t *p_sys);
 static int BBA1_reservoir(stream_sys_t *p_sys);
+static int BBA2(stream_sys_t *p_sys);
+static int BBA2_startup(stream_sys_t *p_sys);
+static uint64_t hls_GetSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index, int segment_index);
 static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index);
 
 static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
@@ -262,6 +269,12 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
     {
         namelen = 4;
         p_sys->algorithm = HTTPLIVE_ALGO_BBA1;
+    }
+    else if (strncmp("BBA2", name, 4) == 0)
+    {
+        namelen = 4;
+        p_sys->algorithm = HTTPLIVE_ALGO_BBA2;
+        p_sys->algorithm_bba2_startup = true;
     }
     else
     {
@@ -284,6 +297,8 @@ static const char* hls_getAlgorithmName(int algorithm)
         algorithmName = "bba0";
     else if (algorithm == HTTPLIVE_ALGO_BBA1)
         algorithmName = "bba1";
+    else if (algorithm == HTTPLIVE_ALGO_BBA2)
+        algorithmName = "bba2";
 
     return algorithmName;
 }
@@ -319,7 +334,7 @@ static void hls_printStatus(stream_sys_t *p_sys)
       (long long)curtime.tv_sec, curtime.tv_nsec, p_sys->playback.current_time, p_sys->playback.buffer_size, p_sys->download.segment - p_sys->playback.segment, p_sys->playback.stream, p_sys->playback.segment, isBuffering(p_sys), p_sys->download.stream, p_sys->download.segment, p_sys->download.active, p_sys->bandwidth, p_sys->avg_bandwidth, p_sys->download.composition) == -1)
     { log_line = (char*)"memory error"; }
 
-    if (p_sys->algorithm == HTTPLIVE_ALGO_BBA1)
+    if (p_sys->algorithm == HTTPLIVE_ALGO_BBA1 || p_sys->algorithm == HTTPLIVE_ALGO_BBA2)
     {
         //BBA1 debug
         char* instant_rates = (char*)malloc(sizeof(char));
@@ -343,6 +358,15 @@ static void hls_printStatus(stream_sys_t *p_sys)
         else
         { free(prev_log_line); }
         free(instant_rates);
+
+        if (p_sys->algorithm == HTTPLIVE_ALGO_BBA2)
+        {
+            char* prev_log_line = log_line;
+            if (asprintf(&log_line, "%sBBA2_debug. status: %s, buffer_decreasing: %d, startup_selected_stream: %d\n", prev_log_line, p_sys->algorithm_bba2_startup?"startup":"steady", p_sys->playback.buffer_decreasing, BBA2_startup(p_sys)) == -1)
+            { log_line = (char*)"memory error"; }
+            else
+            { free(prev_log_line); }
+        }
     }
 
     printf("%s", log_line);
@@ -359,17 +383,21 @@ static uint64_t hls_GetStreamBandwidth(stream_sys_t *p_sys, int stream_index)
 {
     return hls_Get(p_sys->hls_stream, stream_index)->bandwidth;
 }
-static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index)
+static uint64_t hls_GetSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index, int segment_index)
 {
     hls_stream_t *hls = hls_Get(p_sys->hls_stream, stream_index);
     if (hls == NULL)
         return 0;
-    segment_t *segment = segment_GetSegment(hls, p_sys->download.segment);
+    segment_t *segment = segment_GetSegment(hls, segment_index);
     if (segment == NULL)
         return 0;
     if (segment->duration <= 0)
         return 8 * segment->real_size; // as if duration=1
     return 8 * segment->real_size / segment->duration;
+}
+static uint64_t hls_GetNextSegmentRealBandwidth(stream_sys_t *p_sys, int stream_index)
+{
+    return hls_GetSegmentRealBandwidth(p_sys, stream_index, p_sys->download.segment);
 }
 
 static int hls_BufferBased(stream_sys_t *p_sys/*, int progid - not considered for simplicity */) //returns stream number to download or -1 (means nothing to download right now)
@@ -378,6 +406,8 @@ static int hls_BufferBased(stream_sys_t *p_sys/*, int progid - not considered fo
     {
         case HTTPLIVE_ALGO_BBA1:
             return BBA1(p_sys);
+        case HTTPLIVE_ALGO_BBA2:
+            return BBA2(p_sys);
         default:
             return BBA0(p_sys);
     }
@@ -533,12 +563,40 @@ static int BBA1(stream_sys_t *p_sys/*, int progid - not considered for simplicit
         next_stream = stream_over_calculated_rate;
 
     if (next_stream > prev_stream)
-        return prev_stream+1;
+        return prev_stream + 1;
     else if (next_stream < prev_stream)
-        return prev_stream-1;
+        return prev_stream - 1;
     return prev_stream;
 }
 
+static int BBA2(stream_sys_t *p_sys/*, int progid - not considered for simplicity */)
+{
+    int bba1_rate = BBA1(p_sys);
+    int bba2_startup_rate = BBA2_startup(p_sys);
+    if (!p_sys->algorithm_bba2_startup || p_sys->playback.buffer_decreasing || bba1_rate > bba2_startup_rate)
+    {
+        p_sys->algorithm_bba2_startup = false;
+        return bba1_rate;
+    }
+    return bba2_startup_rate;
+}
+
+static int BBA2_startup(stream_sys_t *p_sys/*, int progid - not considered for simplicity */)
+{
+    if (p_sys->playback.buffer_size >= HTTPLIVE_BBA1_BUFFER_SIZE)
+        return -1;
+
+    int max_stream = vlc_array_count(p_sys->hls_stream)-1;
+    int prev_stream = p_sys->download.stream;
+    if (prev_stream == max_stream)
+        return prev_stream;
+
+    uint64_t last_segment_bitrate = hls_GetSegmentRealBandwidth(p_sys, p_sys->download.stream, p_sys->download.segment - 1); // it is not always true (that the previously downloaded segment is that one)
+    if (p_sys->bandwidth > last_segment_bitrate * 8)
+        return prev_stream + 1;
+
+    return prev_stream;
+}
 /****************************************************************************
  *
  ****************************************************************************/
@@ -2029,6 +2087,8 @@ static int hls_DownloadSegmentData(stream_t *s, hls_stream_t *hls, segment_t *se
     hls_stringAppend(p_sys->download.composition, *cur_stream);
     p_sys->download.total_seconds += segment->duration;
     p_sys->playback.buffer_size = p_sys->download.total_seconds - p_sys->playback.current_time / 1000;
+    p_sys->playback.buffer_decreasing = p_sys->playback.buffer_size < p_sys->playback.buffer_size_after_last_download;
+    p_sys->playback.buffer_size_after_last_download = p_sys->playback.buffer_size;
     if (hls->bandwidth == 0 && segment->duration > 0)
     {
         /* Try to estimate the bandwidth for this stream */
@@ -2257,6 +2317,14 @@ static int Prefetch(stream_t *s, int *current)
             return VLC_EGENERIC;
 
         p_sys->download.segment++;
+
+        /* this does not exist inside the hls_DownloadSegmentData function for bba */
+        if (p_sys->algorithm != HTTPLIVE_ALGO_CLASSIC)
+        {
+            int bba_stream = hls_BufferBased(p_sys);
+            if (bba_stream != -1)
+                *current = bba_stream;
+        }
 
         /* adapt bandwidth? */
         if (*current != stream)
@@ -2542,6 +2610,8 @@ static int Open(vlc_object_t *p_this)
     p_sys->playback.read_segments_time = 0;
     p_sys->playback.current_time = - PLAYBACK_DELAY;
     p_sys->playback.buffer_size = 0;
+    p_sys->playback.buffer_size_after_last_download = 0;
+    p_sys->playback.buffer_decreasing = false;
     p_sys->last_read_timestamp = -1;
     p_sys->curl_bw = false;
 
