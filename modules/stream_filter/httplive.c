@@ -523,7 +523,7 @@ static int BBA1(stream_sys_t *p_sys/*, int progid - not considered for simplicit
 
     int reservoir = BBA1_reservoir(p_sys);
     if (reservoir == -1)
-        return 0;
+        return 0; //BBA1 not supported :'(
 
     int count = vlc_array_count(p_sys->hls_stream);
     int max_stream = count-1;
@@ -591,8 +591,14 @@ static int BBA2_startup(stream_sys_t *p_sys/*, int progid - not considered for s
     if (prev_stream == max_stream)
         return prev_stream;
 
+    int reservoir = BBA1_reservoir(p_sys);
+    if (reservoir == -1)
+        return 0; //BBA1 not supported :'(
+    int cushion = reservoir + HTTPLIVE_BBA1_CUSHION;
+    double speedup = 8 - (double)(6 * p_sys->playback.buffer_size) / cushion;
+
     uint64_t last_segment_bitrate = hls_GetSegmentRealBandwidth(p_sys, p_sys->download.stream, p_sys->download.segment - 1); // it is not always true (that the previously downloaded segment is that one)
-    if (p_sys->bandwidth > last_segment_bitrate * 8)
+    if (p_sys->bandwidth > speedup * last_segment_bitrate)
         return prev_stream + 1;
 
     return prev_stream;
