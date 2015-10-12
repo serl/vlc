@@ -273,21 +273,21 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
     {
         namelen = 4;
         p_sys->algorithm = HTTPLIVE_ALGO_BBA1;
-        p_sys->algorithm_bba1_monotonic_reservoir = -1;
+        p_sys->algorithm_bba1_monotonic_reservoir = -1; //that means "no"
     }
     else if (strncmp("BBA2", name, 4) == 0)
     {
         namelen = 4;
         p_sys->algorithm = HTTPLIVE_ALGO_BBA2;
         p_sys->algorithm_bba2_startup = true;
-        p_sys->algorithm_bba1_monotonic_reservoir = -1;
+        p_sys->algorithm_bba1_monotonic_reservoir = -1; //that means "no"
     }
     else if (strncmp("BBA3", name, 4) == 0)
     {
         namelen = 4;
         p_sys->algorithm = HTTPLIVE_ALGO_BBA3;
         p_sys->algorithm_bba2_startup = true;
-        p_sys->algorithm_bba1_monotonic_reservoir = 0;
+        p_sys->algorithm_bba1_monotonic_reservoir = 0; //that means "yes"
     }
     else
     {
@@ -638,7 +638,7 @@ static int BBA2_startup(stream_sys_t *p_sys/*, int progid - not considered for s
 
     int reservoir = BBA1_reservoir(p_sys);
     if (reservoir == -1)
-        return 0; //BBA1 not supported :'(
+        return 0; //BBA1+ not supported :'(
     int cushion = reservoir + HTTPLIVE_BBA1_CUSHION;
     double speedup = 8 - (double)(6 * p_sys->playback.buffer_size) / cushion;
 
