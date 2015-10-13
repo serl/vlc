@@ -198,6 +198,7 @@ struct stream_sys_t
     int algorithm_classic_dampingfactor;
     bool algorithm_bba2_startup;
     int algorithm_bba1_monotonic_reservoir; // -1 => disabled, otherwise: past value
+    bool algorithm_bba3_aggressive;
     long last_read_timestamp;
 };
 
@@ -288,6 +289,12 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
         p_sys->algorithm = HTTPLIVE_ALGO_BBA3;
         p_sys->algorithm_bba2_startup = true;
         p_sys->algorithm_bba1_monotonic_reservoir = 0; //that means "yes"
+        p_sys->algorithm_bba3_aggressive = false;
+        if (strlen(name) > namelen)
+        {
+            char* next = name+namelen+1;
+            p_sys->algorithm_bba3_aggressive = (*next == 'a');
+        }
     }
     else
     {
@@ -664,6 +671,8 @@ static int BBA3(stream_sys_t *p_sys/*, int progid - not considered for simplicit
         return bba2_rate;
 
     int lookahead_chunks = p_sys->download.segment - p_sys->playback.segment;
+    if (p_sys->algorithm_bba3_aggressive)
+        lookahead_chunks /= 2;
     return BBA_chunkmap(p_sys, lookahead_chunks);
 }
 
