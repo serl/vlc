@@ -293,7 +293,7 @@ static void hls_setAlgorithm(stream_sys_t *p_sys, char *name)
         if (strlen(name) > namelen)
         {
             char* next = name+namelen+1;
-            p_sys->algorithm_bba3_aggressive = (*next == 'a');
+            p_sys->algorithm_bba3_aggressive = (*next == 'a' || *next == 'A');
         }
     }
     else
